@@ -9,8 +9,6 @@ SAIL_WHEEL_DIR="${ARTIFACT_DIR}/wheels/vllm-sail"
 LOG_DIR="${ARTIFACT_DIR}/logs"
 MANIFEST="${ARTIFACT_DIR}/build-manifest.txt"
 
-SDK_URL="${SDK_URL:-https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/ppu.2v2_release-202609251051/PPU_SDK/ppu_1.0.0_Ubuntu2404_v13_release.run}"
-TORCH_URL="${TORCH_URL:-https://art-pub.eng.t-head.cn/artifactory/apackage/daily/ppu.2v2_release/latest/PPU_SDK_PYPI/pytorch/ppu_sdk_hggcrt3-pytorch2.13.0-ubuntu2404-py312.tar.gz}"
 VLLM_REPOSITORY="${VLLM_REPOSITORY:-https://github.com/vllm-project/vllm.git}"
 VLLM_REF="${VLLM_REF:-$(tr -d '[:space:]' < "${ROOT_DIR}/.github/vllm-main-verified.commit")}"
 PYTORCH_SAIL_ARCH="${PYTORCH_SAIL_ARCH:-ppu_15;ppu_10}"
@@ -64,67 +62,20 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
-download() {
-    local url=$1
-    local output=$2
-    if command -v curl >/dev/null 2>&1; then
-        curl --fail --location --retry 3 --retry-all-errors \
-            --output "${output}" "${url}"
-    elif command -v wget >/dev/null 2>&1; then
-        wget --tries=3 --output-document="${output}" "${url}"
-    else
-        fail "curl or wget is required"
-    fi
-}
-
-sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{print $1}'
-    else
-        fail "sha256sum or shasum is required"
-    fi
-}
-
-url_basename() {
-    local path=${1%%\?*}
-    basename "${path}"
-}
-
 [[ "$(uname -s)" == "Linux" ]] || fail "native wheel builds require Linux"
-for command_name in git python tar tee awk find ldconfig; do
+for command_name in git python tee awk find; do
     require_command "${command_name}"
 done
 PYTHON_VERSION="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-[[ "${PYTHON_VERSION}" == "3.12" ]] || \
-    fail "the selected SAIL PyTorch archive requires Python 3.12"
-[[ -w /usr/local ]] || fail "/usr/local must be writable inside the build container"
-
-SDK_INSTALLER="${WORK_DIR}/$(url_basename "${SDK_URL}")"
-TORCH_ARCHIVE="${WORK_DIR}/$(url_basename "${TORCH_URL}")"
+[[ "${PYTHON_VERSION}" == "3.12" ]] || fail "the selected image requires Python 3.12"
 {
     printf 'status=running\n'
     printf 'vllm_ref=%s\n' "${VLLM_REF}"
     printf 'pytorch_sail_arch=%s\n' "${PYTORCH_SAIL_ARCH}"
-    printf 'sdk_file=%s\n' "$(basename "${SDK_INSTALLER}")"
-    printf 'torch_file=%s\n' "$(basename "${TORCH_ARCHIVE}")"
+    printf 'build_image=%s\n' "${VLLM_SAIL_BUILD_IMAGE:-}"
 } >>"${MANIFEST}"
 
-download "${SDK_URL}" "${SDK_INSTALLER}"
-download "${TORCH_URL}" "${TORCH_ARCHIVE}"
-printf 'sdk_sha256=%s\n' "$(sha256 "${SDK_INSTALLER}")" >>"${MANIFEST}"
-printf 'torch_sha256=%s\n' "$(sha256 "${TORCH_ARCHIVE}")" >>"${MANIFEST}"
-
-# job container 是临时环境；移走镜像内软件栈后安装本次指定版本。
-for path in /usr/local/PPU_SDK /usr/local/cuda /usr/local/cuda-13.0; do
-    if [[ -e "${path}" || -L "${path}" ]]; then
-        mv "${path}" "${WORK_DIR}/$(basename "${path}").image"
-    fi
-done
-sh "${SDK_INSTALLER}" --silent --prefix=/usr/local \
-    2>&1 | tee "${LOG_DIR}/sdk-install.log"
-ldconfig
+[[ -r /usr/local/PPU_SDK/envsetup.sh ]] || fail "the image must contain the SAIL SDK"
 # shellcheck disable=SC1091
 source /usr/local/PPU_SDK/envsetup.sh
 export PPU_SDK=/usr/local/PPU_SDK
@@ -140,28 +91,25 @@ unset VLLM_USE_PRECOMPILED VLLM_USE_PRECOMPILED_RUST
 unset VLLM_PRECOMPILED_WHEEL_LOCATION
 # envsetup.sh repoints pip at an internal mirror (art.eng.t-head.cn) that is
 # unreachable from the CPU runner; force the public Aliyun PyPI mirror after the
-# SDK env is sourced. Override with SAIL_PIP_INDEX_URL. All packages installed
-# via pip are ordinary PyPI packages; PPU-specific components come from the SDK
-# and torch archive (installed from local wheels), not from any pip index.
+# SDK env is sourced. Override with SAIL_PIP_INDEX_URL.
 export PIP_INDEX_URL="${SAIL_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
-
-TORCH_DIR="${WORK_DIR}/torch"
-mkdir -p "${TORCH_DIR}"
-tar -xzf "${TORCH_ARCHIVE}" -C "${TORCH_DIR}"
-mapfile -t torch_wheels < <(
-    find "${TORCH_DIR}" -type f -path '*/package/*.whl' -print
-)
-((${#torch_wheels[@]} > 0)) || fail "no SAIL PyTorch wheel found in archive"
-python -m pip install --force-reinstall --no-deps "${torch_wheels[@]}" \
-    2>&1 | tee "${LOG_DIR}/torch-install.log"
+export PIP_EXTRA_INDEX_URL=""
+export PIP_CONSTRAINT="${WORK_DIR}/image-constraints.txt"
 
 command -v hgcc
-hgcc --version 2>&1 | tee "${LOG_DIR}/hgcc-version.log"
-if command -v nvcc >/dev/null 2>&1; then
-    fail "nvcc must not be present in the CUDA-free build environment"
-fi
-python -c 'import torch; print(torch.__version__); print(torch.__file__)' \
-    2>&1 | tee "${LOG_DIR}/torch-env.log"
+"${HGCC}" --version 2>&1 | tee "${LOG_DIR}/hgcc-version.log"
+python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" prepare \
+    --sdk "${PPU_SDK}" --output "${LOG_DIR}/image-stack.json" \
+    --constraints "${PIP_CONSTRAINT}" | tee -a "${MANIFEST}"
+python - <<'PY' 2>&1 | tee "${LOG_DIR}/torch-env.log"
+from pathlib import Path
+import torch
+
+print(torch.__version__)
+print(torch.__file__)
+if not (Path(torch.__file__).parent / ".ppu_compat/compatible_wrapper.h").is_file():
+    raise SystemExit("prepared SAIL PyTorch must contain PPU headers")
+PY
 
 VLLM_SRC="${WORK_DIR}/vllm"
 git init "${VLLM_SRC}"
@@ -180,6 +128,8 @@ git -C "${VLLM_SRC}" checkout --detach FETCH_HEAD
         # shellcheck disable=SC1091
         source "${CARGO_HOME:-$HOME/.cargo}/env"
     fi
+    # Fetch Cargo Git dependencies through the Git CLI to honor job-local Git configuration.
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true
     # Follow the Rust toolchain pinned by the checked-out vLLM source.
     RUSTUP_TOOLCHAIN="$(python - <<'PY'
 import tomllib
@@ -258,6 +208,9 @@ mapfile -t sail_wheels < <(
     fail "native build unexpectedly produced a pure-Python wheel"
 [[ -s "${vllm_wheels[0]}" ]] || fail "vLLM wheel is empty"
 [[ -s "${sail_wheels[0]}" ]] || fail "vLLM SAIL wheel is empty"
+
+python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" verify \
+    --sdk "${PPU_SDK}" --output "${LOG_DIR}/image-stack.json" | tee -a "${MANIFEST}"
 
 {
     printf 'status=succeeded\n'

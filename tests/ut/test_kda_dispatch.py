@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -95,6 +98,26 @@ def test_ppu_kda_cannot_select_nvidia_kernel_when_pla_disabled(monkeypatch, mode
         else (12, 128, 4, 0, "bf16", "bf16", "fp32")
     )
     assert fn(*args) is False
+
+
+@pytest.mark.parametrize(
+    "name", ["is_flashkda_supported", "is_fused_kda_decode_supported"]
+)
+def test_device_predicate_calls_bind_all_required_arguments(name):
+    fn = function("vllm_sail/patch/enhancement/attention/kda.py", name, {})
+    path = Path(__file__).parents[1] / "e2e/fork_port/test_kda.py"
+    calls = [
+        node
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == name
+    ]
+    assert calls
+    for call in calls:
+        inspect.signature(fn).bind(
+            *call.args, **{kw.arg: kw.value for kw in call.keywords}
+        )
 
 
 @pytest.mark.upstream_source

@@ -558,6 +558,7 @@ def test_fused_kda_decode_correctness(
         num_spec=0,
         input_dtype=torch.bfloat16,
         conv_state_dtype=torch.bfloat16,
+        recurrent_state_dtype=torch.float32,
     ):
         pytest.skip("Fused KDA decode is not supported on this platform")
     torch.manual_seed(967 + num_heads + num_seqs)
@@ -726,15 +727,17 @@ def test_fused_kda_decode_rejects_speculative_conv_state():
         num_spec=2,
         input_dtype=torch.bfloat16,
         conv_state_dtype=torch.bfloat16,
+        recurrent_state_dtype=torch.float32,
     )
 
 
+@pytest.mark.parametrize("production_wrapper", [False, True])
 @torch.inference_mode()
-def test_flashkda_correctness():
+def test_flashkda_correctness(production_wrapper):
     if current_platform.is_ppu() and envs.VLLM_PPU_USE_PLA:
         from pla.prefill.flashkdapro import flashkda_fwd
     else:
-        if not is_flashkda_supported(128, torch.bfloat16, -3.0):
+        if not is_flashkda_supported(128, torch.bfloat16, torch.float32, -3.0):
             pytest.skip("FlashKDA is not supported on this platform")
 
         import vllm._flashkda_C  # noqa: F401
@@ -780,7 +783,29 @@ def test_flashkda_correctness():
     actual_out = torch.empty_like(v)
     actual_state = torch.empty_like(initial_state)
 
-    if current_platform.is_ppu() and envs.VLLM_PPU_USE_PLA:
+    if production_wrapper:
+        from vllm.models.kimi_k3.nvidia.kda import _flashkda_prefill
+
+        flat_bias = dt_bias.flatten()
+        assert flat_bias.ndim == 1
+        returned_out, returned_state = _flashkda_prefill(
+            q,
+            k,
+            v,
+            raw_g,
+            beta_logits,
+            A_log,
+            flat_bias,
+            lower_bound,
+            initial_state,
+            cu_seqlens,
+            actual_out,
+            actual_state,
+            torch.empty(0, dtype=torch.uint8, device=DEVICE),
+        )
+        assert returned_out is actual_out
+        assert returned_state is actual_state
+    elif current_platform.is_ppu() and envs.VLLM_PPU_USE_PLA:
         flashkda_fwd(
             q.view(B * T, H, D),
             k.view(B * T, H, D),

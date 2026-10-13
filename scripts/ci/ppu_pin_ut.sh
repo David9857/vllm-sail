@@ -19,10 +19,16 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 mv "${WHEELS_DIR}" "${WORK_DIR}/wheels"
 WHEELS_DIR="${WORK_DIR}/wheels"
+export PIP_CONSTRAINT="${UT_RESULTS_DIR}/image-constraints.txt"
+python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" prepare \
+    --sdk /usr/local/PPU_SDK --output "${UT_RESULTS_DIR}/image-stack.json" \
+    --constraints "${PIP_CONSTRAINT}"
 python -m pip install --no-deps --force-reinstall \
     "${WHEELS_DIR}"/vllm/*.whl "${WHEELS_DIR}"/vllm-sail/*.whl
 PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     python -m pip install -r "${ROOT_DIR}/requirements/dev.txt"
+python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" verify \
+    --sdk /usr/local/PPU_SDK --output "${UT_RESULTS_DIR}/image-stack.json"
 
 # Check the installed packages outside the source checkout first.
 cd /tmp

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 # also why vllm's own envs.py guards its declarations the same way.)
 # ---------------------------------------------------------------------------
 if TYPE_CHECKING:
+    PPU_SDK: str = "/usr/local/PPU_SDK"
     VLLM_SAIL_FUSED_RMSNORM_QUANT: bool = False
     VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT: bool = False
     VLLM_SAIL_DENSE_BF16_DEEPGEMM: bool = False
@@ -117,6 +118,7 @@ def _choice(
 
 
 environment_variables: dict[str, Callable[[], Any]] = {
+    "PPU_SDK": lambda: os.environ.get("PPU_SDK", "/usr/local/PPU_SDK"),
     "VLLM_SAIL_FUSED_RMSNORM_QUANT": _bool("VLLM_SAIL_FUSED_RMSNORM_QUANT", False),
     "VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT": _bool(
         "VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT", False

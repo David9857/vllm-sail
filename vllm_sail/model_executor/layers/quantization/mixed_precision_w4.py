@@ -282,6 +282,9 @@ class W4AInt8MoEMethod(FusedMoEMethodBase):
         shared_experts: "SharedExperts | None",
         shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        from vllm_sail.utils.acext import load_acext
+
+        load_acext()
         from acext import (
             fusedmoe_wrapper,
             get_enum_from_booleans,

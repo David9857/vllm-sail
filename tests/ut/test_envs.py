@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import ast
+import sys
+import threading
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 from vllm_sail import envs
@@ -35,6 +42,7 @@ def test_defaults_and_canonical_snapshot() -> None:
     expected = {f"VLLM_SAIL_{key}": value for key, value in BOOL_DEFAULTS.items()}
     expected.update({f"VLLM_SAIL_{key}": None for key in BACKENDS})
     expected["VLLM_DEEPEPLL_RECV_HOOK"] = True
+    expected["PPU_SDK"] = "/usr/local/PPU_SDK"
     assert envs.snapshot() == expected
     assert set(envs.environment_variables) == set(expected)
     for suffix in (*BOOL_DEFAULTS, *BACKENDS):
@@ -126,6 +134,12 @@ def test_is_set_recognizes_either_name_even_when_empty(
     assert envs.is_set(ppu) is True
 
 
+def test_sdk_path_is_lazy(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert envs.PPU_SDK == "/usr/local/PPU_SDK"
+    monkeypatch.setenv("PPU_SDK", "/opt/sail")
+    assert envs.PPU_SDK == "/opt/sail"
+
+
 def test_shared_upstream_variable_keeps_its_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -152,3 +166,93 @@ def test_dir_lists_resolvable_names_and_unknown_attributes_raise() -> None:
         getattr(envs, name)
     with pytest.raises(AttributeError, match="VLLM_SAIL_UNKNOWN"):
         _ = envs.VLLM_SAIL_UNKNOWN
+
+
+def _load_gdn_functions(relative_path, names, namespace):
+    """Execute only the selected original function bodies, without device imports or bypassing device-test gates."""
+    path = Path(__file__).parents[2] / relative_path
+    tree = ast.parse(path.read_text(), filename=str(path))
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    assert {node.name for node in functions} == set(names)
+    for node in functions:
+        node.decorator_list = []
+    future = ast.parse("from __future__ import annotations").body
+    module = ast.Module(body=[*future, *functions], type_ignores=[])
+    exec(compile(module, str(path), "exec"), namespace)
+
+
+@pytest.mark.parametrize("kind", ["decode", "prefill"])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(None, True), ("1", True), ("0", False), ("true", True), ("false", False)],
+)
+def test_gdn_e2e_env_cases_ignore_inherited_ci_environment(
+    monkeypatch, kind, raw, expected
+):
+    """Reuse E2E environment test functions so stale interfaces are caught before device CI."""
+    name = (
+        "test_ppu_pla_cuda_env_resolution"
+        if kind == "decode"
+        else "test_ppu_pla_env_resolution"
+    )
+    namespace = {"envs": envs}
+    _load_gdn_functions(
+        f"tests/e2e/fork_port/test_gdn_pla_{kind}.py", [name], namespace
+    )
+    monkeypatch.setenv("VLLM_SAIL_USE_PLA", "1")
+    monkeypatch.setenv("VLLM_PPU_USE_PLA", "0")
+    namespace[name](monkeypatch, raw, expected)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "test_resolver_disabled_by_env",
+        "test_resolver_skips_non_ppu",
+        "test_resolver_enabled_on_ppu",
+        "test_resolver_tolerates_missing_pla",
+        "test_resolver_honors_env_after_resolution",
+    ],
+)
+def test_gdn_prefill_e2e_resolver_stubs_match_production(monkeypatch, name):
+    """Execute real resolver bodies and E2E stubs without simulating numerical kernels."""
+    resolver = types.ModuleType("_gdn_prefill_env_test")
+    resolver.__dict__.update(
+        envs=envs,
+        current_platform=SimpleNamespace(is_ppu=lambda: True),
+        _lock=threading.Lock(),
+        _resolved=False,
+        _chunk_fwd_fn=None,
+        _supported_head_configs=frozenset(),
+        logger=SimpleNamespace(warning_once=lambda *a: None, info_once=lambda *a: None),
+    )
+    _load_gdn_functions(
+        "vllm_sail/attention/pla_prefill.py",
+        [
+            "_resolve_sail_cuda_pla_prefill",
+            "get_sail_cuda_pla_prefill_fwd",
+            "get_sail_cuda_pla_prefill_head_configs",
+        ],
+        resolver.__dict__,
+    )
+    namespace = dict(
+        sail_cuda_pla_prefill=resolver,
+        SimpleNamespace=SimpleNamespace,
+        types=types,
+        sys=sys,
+        HV=8,
+        HK=4,
+    )
+    _load_gdn_functions(
+        "tests/e2e/fork_port/test_gdn_pla_prefill.py",
+        ["_install_fake_pla", "_stub_resolver_env", name],
+        namespace,
+    )
+    if name == "test_resolver_tolerates_missing_pla":
+        # Devices may have cached PLA submodules; blocking only the parent cannot simulate a missing package.
+        namespace["_install_fake_pla"](monkeypatch)
+    namespace[name](monkeypatch)

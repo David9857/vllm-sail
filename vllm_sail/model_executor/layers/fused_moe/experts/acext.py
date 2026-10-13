@@ -27,6 +27,9 @@ logger = init_logger(__name__)
 # Acext availability check
 if current_platform.is_ppu() and current_platform.is_device_capability((8, 0)):
     try:
+        from vllm_sail.utils.acext import load_acext
+
+        load_acext()
         from acext import fusedmoe_wrapper, get_enum_from_booleans
 
         _ACEXT_AVAILABLE = True

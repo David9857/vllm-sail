@@ -2,34 +2,30 @@
 # Plugin registration precedes imports of patched providers.
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Parity, fallback and benchmark tests for the PPU SAIL CUDA PLA decode path.
+"""Dispatch, numerical, boundary, and performance tests for PPU SAIL PLA GDN decode.
 
-With ``VLLM_PPU_USE_PLA`` enabled, the three GDN decode PLA wrappers
-route from the community Triton kernels to the PPU SAIL CUDA kernels
-(``k_last`` / ``k_last_packed``) provided by the external ``pla`` package:
+``VLLM_SAIL_USE_PLA`` controls the PLA path; ``VLLM_PPU_USE_PLA`` is its
+lower-priority alias. Real production wrappers compare community Triton and PLA
+outputs and fp32 state pools:
 
-* ``fused_recurrent_gated_delta_rule_packed_decode`` -> ``k_last_packed``
-* ``fused_sigmoid_gating_delta_rule_update``         -> ``k_last``
+* Packed decode uses ``k_last_packed``; regular and eligible speculative calls
+  use ``k_last``.
+* Non-speculative varlen references use contiguous 2D per-token slot tables;
+  PLA uses 1D per-sequence final-state slots.
+* bf16 states, non-128 head dimensions, and int64 accepted tokens must use Triton.
+* Calls wrapping real PLA functions verify dispatch; numerical equality alone
+  is not dispatch evidence.
+* ``NULL_BLOCK_ID=0`` and unused slots remain unchanged; padding does not affect
+  real requests.
+* Performance tests use unwrapped functions and record time and memory without
+  performance assertions.
 
-These tests monkeypatch ``sail_cuda_pla``'s resolved kernel handles to force
-each implementation, then compare:
-
-1. numerical parity of the attention output and the updated fp32 ssm state
-   pool between the CUDA and Triton implementations;
-2. the per-call gating: calls that violate the CUDA kernel constraints
-   (bf16 state pool, vLLM-style speculative decoding, head dims != 128)
-   must fall back to Triton, i.e. produce bitwise-identical results to the
-   forced-Triton path;
-3. the NULL_BLOCK_ID=0 isolation: a padded request (CUDA-graph padding) must
-   not disturb the outputs/states of real requests;
-4. kernel-level wall-clock time and peak memory of both implementations
-   (recorded via stdout, no hard perf assertions).
-
-The kernel tests require the PPU platform with the ``pla`` package installed;
-the env-var resolution tests are platform-independent.
+This entire E2E file requires a real PPU. Environment-variable regressions also
+run in device-free CPU unit tests.
 """
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -83,19 +79,22 @@ def _force_triton(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sail_cuda_pla, "_k_last_packed_fn", None)
 
 
-def _force_cuda(monkeypatch: pytest.MonkeyPatch, pla_module) -> None:
-    """Force the wrappers onto the PPU SAIL CUDA kernels."""
+def _force_cuda(
+    monkeypatch: pytest.MonkeyPatch, pla_module, *, record_calls: bool = False
+) -> SimpleNamespace:
+    """Enable real PLA with optional call recording; keep Mock overhead out of benchmarks."""
+    monkeypatch.setenv("VLLM_SAIL_USE_PLA", "1")
+    kernels = SimpleNamespace(
+        k_last=pla_module.fused_sigmoid_gating_delta_rule_forward_k_last,
+        k_last_packed=pla_module.fused_sigmoid_gating_delta_rule_forward_k_last_packed,
+    )
+    if record_calls:
+        kernels.k_last = Mock(wraps=kernels.k_last)
+        kernels.k_last_packed = Mock(wraps=kernels.k_last_packed)
     monkeypatch.setattr(sail_cuda_pla, "_resolved", True)
-    monkeypatch.setattr(
-        sail_cuda_pla,
-        "_k_last_fn",
-        pla_module.fused_sigmoid_gating_delta_rule_forward_k_last,
-    )
-    monkeypatch.setattr(
-        sail_cuda_pla,
-        "_k_last_packed_fn",
-        pla_module.fused_sigmoid_gating_delta_rule_forward_k_last_packed,
-    )
+    monkeypatch.setattr(sail_cuda_pla, "_k_last_fn", kernels.k_last)
+    monkeypatch.setattr(sail_cuda_pla, "_k_last_packed_fn", kernels.k_last_packed)
+    return kernels
 
 
 def _make_decode_inputs(
@@ -258,16 +257,28 @@ def test_ppu_pla_cuda_env_resolution(
     new_val: str | None,
     expected: bool,
 ) -> None:
-    if new_val is None:
-        monkeypatch.delenv("VLLM_PPU_USE_PLA", raising=False)
-    else:
-        monkeypatch.setenv("VLLM_PPU_USE_PLA", new_val)
+    names = ("VLLM_SAIL_USE_PLA", "VLLM_PPU_USE_PLA")
+    for name in names:
+        with monkeypatch.context() as isolated:
+            # Test each name independently without inheriting CI's canonical=1.
+            for candidate in names:
+                isolated.delenv(candidate, raising=False)
+            if new_val is not None:
+                isolated.setenv(name, new_val)
+            assert envs.environment_variables["VLLM_SAIL_USE_PLA"]() is expected
+            assert envs.VLLM_SAIL_USE_PLA is expected
+            assert envs.VLLM_PPU_USE_PLA is expected
 
-    # Call the resolver lambda directly: envs.__getattr__ may be wrapped in
-    # functools.cache after service init, which would bypass monkeypatched
-    # env vars.
-    resolve = envs.environment_variables["VLLM_PPU_USE_PLA"]
-    assert resolve() is expected
+
+@pytest.mark.parametrize(
+    "canonical,alias,expected",
+    [("1", "0", True), ("0", "1", False), ("false", "true", False), ("", "1", False)],
+)
+def test_sail_pla_env_takes_precedence(monkeypatch, canonical, alias, expected):
+    monkeypatch.setenv("VLLM_SAIL_USE_PLA", canonical)
+    monkeypatch.setenv("VLLM_PPU_USE_PLA", alias)
+    assert envs.VLLM_SAIL_USE_PLA is expected
+    assert envs.VLLM_PPU_USE_PLA is expected
 
 
 # ---------------------------------------------------------------------------
@@ -284,10 +295,13 @@ def test_packed_decode_cuda_matches_triton(
     state_t = inp.ssm_state.clone()
     out_t = _run_packed(inp, state_t)
 
-    _force_cuda(monkeypatch, pla_module)
+    calls = _force_cuda(monkeypatch, pla_module, record_calls=True)
     state_c = inp.ssm_state.clone()
     out_c = _run_packed(inp, state_c)
 
+    calls.k_last_packed.assert_called_once()
+    calls.k_last.assert_not_called()
+    assert calls.k_last_packed.call_args.args[-1] is False
     _assert_parity(out_c, out_t, state_c, state_t)
 
 
@@ -306,16 +320,36 @@ def test_update_cuda_matches_triton(
     inp = _make_decode_inputs(
         batch, state_dtype=torch.float32, query_lens=query_lens, seed=sum(query_lens)
     )
+    # Non-speculative PLA uses one final-state slot per sequence; in-place
+    # Triton reads a slot per token. Repeating a slot across each row yields
+    # the same final state without cross-sequence writes. Allocate contiguous
+    # storage: expand's zero token stride is invalid because Triton writeback
+    # does not multiply by that stride.
+    reference_indices = inp.ssm_state_indices[:, None].repeat(1, max(query_lens))
+    assert reference_indices.shape == (batch, max(query_lens))
+    assert reference_indices.is_contiguous()
+    assert reference_indices.stride(1) == 1
+    assert inp.ssm_state_indices.unique().numel() == batch
+    for row, length in zip(reference_indices, query_lens, strict=False):
+        assert row[:length].numel() == length
+        assert torch.all(row == row[0])
 
     _force_triton(monkeypatch)
     state_t = inp.ssm_state.clone()
-    out_t = _run_update(inp, state_t)
+    out_t = _run_update(inp, state_t, ssm_state_indices=reference_indices)
 
-    _force_cuda(monkeypatch, pla_module)
+    calls = _force_cuda(monkeypatch, pla_module, record_calls=True)
     state_c = inp.ssm_state.clone()
     out_c = _run_update(inp, state_c)
 
+    calls.k_last.assert_called_once()
+    calls.k_last_packed.assert_not_called()
+    assert calls.k_last.call_args.args[10] is inp.ssm_state_indices
+    assert calls.k_last.call_args.args[15] is False
+    assert calls.k_last.call_args.args[-1] is False
     _assert_parity(out_c, out_t, state_c, state_t)
+    torch.testing.assert_close(state_t[0], inp.ssm_state[0], atol=0, rtol=0)
+    torch.testing.assert_close(state_c[0], inp.ssm_state[0], atol=0, rtol=0)
 
 
 # ---------------------------------------------------------------------------
@@ -332,16 +366,19 @@ def test_update_falls_back_for_bf16_pool(monkeypatch: pytest.MonkeyPatch) -> Non
     state_t = inp.ssm_state.clone()
     out_t = _run_update(inp, state_t)
 
-    _force_cuda(monkeypatch, pla_module)
+    calls = _force_cuda(monkeypatch, pla_module, record_calls=True)
     state_c = inp.ssm_state.clone()
     out_c = _run_update(inp, state_c)
 
+    calls.k_last.assert_not_called()
+    calls.k_last_packed.assert_not_called()
     torch.testing.assert_close(out_c, out_t, atol=0, rtol=0)
     torch.testing.assert_close(state_c, state_t, atol=0, rtol=0)
 
 
-def test_update_falls_back_for_spec_decoding(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("accepted_dtype", [torch.int32, torch.int64])
+def test_update_spec_dispatch_and_parity(
+    monkeypatch: pytest.MonkeyPatch, accepted_dtype: torch.dtype
 ) -> None:
     pla_module = _requires_ppu_pla()
     batch, num_spec = 3, 2
@@ -352,17 +389,15 @@ def test_update_falls_back_for_spec_decoding(
         query_lens=[num_spec] * batch,
         seed=12,
     )
-    # vLLM-style speculative decoding: per-token state slots (2D indices)
-    # plus num_accepted_tokens. The CUDA kernel cannot express this, so the
-    # wrapper must fall back to Triton.
+    # PLA supports 2D int32 slot tables and int32 accepted tokens.
+    # int64 accepted tokens must still fall back; verify dispatch through
+    # recorded calls, not by inferring it from numerical equality.
     idx2d = (
         (torch.randperm(batch * num_spec).reshape(batch, num_spec) + 1)
         .to(torch.int32)
         .to(DEVICE)
     )
-    num_accepted = torch.randint(1, num_spec + 1, (batch,), dtype=torch.int32).to(
-        DEVICE
-    )
+    num_accepted = torch.tensor([1, 2, 1], dtype=accepted_dtype, device=DEVICE)
 
     _force_triton(monkeypatch)
     state_t = inp.ssm_state.clone()
@@ -370,14 +405,28 @@ def test_update_falls_back_for_spec_decoding(
         inp, state_t, ssm_state_indices=idx2d, num_accepted_tokens=num_accepted
     )
 
-    _force_cuda(monkeypatch, pla_module)
+    calls = _force_cuda(monkeypatch, pla_module, record_calls=True)
     state_c = inp.ssm_state.clone()
     out_c = _run_update(
         inp, state_c, ssm_state_indices=idx2d, num_accepted_tokens=num_accepted
     )
 
-    torch.testing.assert_close(out_c, out_t, atol=0, rtol=0)
-    torch.testing.assert_close(state_c, state_t, atol=0, rtol=0)
+    calls.k_last_packed.assert_not_called()
+    if accepted_dtype == torch.int32:
+        calls.k_last.assert_called_once()
+        args = calls.k_last.call_args.args
+        assert args[10] is idx2d
+        assert args[15] is True  # Per-token speculative writeback only.
+        assert args[18] is num_accepted
+        assert args[-1] is False
+        # Use existing cross-backend tolerances, not same-path bitwise equality.
+        _assert_parity(out_c, out_t, state_c, state_t)
+    else:
+        calls.k_last.assert_not_called()
+        torch.testing.assert_close(out_c, out_t, atol=0, rtol=0)
+        torch.testing.assert_close(state_c, state_t, atol=0, rtol=0)
+    torch.testing.assert_close(state_c[0], inp.ssm_state[0], atol=0, rtol=0)
+    torch.testing.assert_close(state_t[0], inp.ssm_state[0], atol=0, rtol=0)
 
 
 def test_update_falls_back_for_non_128_head_dim(
@@ -391,10 +440,12 @@ def test_update_falls_back_for_non_128_head_dim(
     state_t = inp.ssm_state.clone()
     out_t = _run_update(inp, state_t)
 
-    _force_cuda(monkeypatch, pla_module)
+    calls = _force_cuda(monkeypatch, pla_module, record_calls=True)
     state_c = inp.ssm_state.clone()
     out_c = _run_update(inp, state_c)
 
+    calls.k_last.assert_not_called()
+    calls.k_last_packed.assert_not_called()
     torch.testing.assert_close(out_c, out_t, atol=0, rtol=0)
     torch.testing.assert_close(state_c, state_t, atol=0, rtol=0)
 
@@ -403,21 +454,14 @@ def test_update_falls_back_for_non_128_head_dim(
 # boundary conditions
 # ---------------------------------------------------------------------------
 def test_packed_null_state_idx_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A NULL_BLOCK_ID=0 (CUDA-graph padding) request must not disturb the
-    real requests in the same batch on the CUDA path.
-
-    Note the semantic difference vs Triton: the CUDA kernel treats slot 0 as
-    a valid slot (reads/writes it), while the Triton kernel skips idx <= 0.
-    Slot 0 is vLLM's reserved null block that real requests never use, so
-    this is safe; this test pins the isolation property.
-    """
+    """Never write back to vLLM's NULL_BLOCK_ID=0; padding must not affect real requests."""
     pla_module = _requires_ppu_pla()
     batch = 4
     inp = _make_decode_inputs(batch, state_dtype=torch.float32, num_slots=8, seed=14)
     padded_idx = inp.ssm_state_indices.clone()
     padded_idx[1] = 0  # NULL_BLOCK_ID: padded request under CUDA graphs
 
-    _force_cuda(monkeypatch, pla_module)
+    calls = _force_cuda(monkeypatch, pla_module, record_calls=True)
     state_pad = inp.ssm_state.clone()
     inp_padded = SimpleNamespace(**{**vars(inp), "ssm_state_indices": padded_idx})
     out_pad = _run_packed(inp_padded, state_pad)
@@ -444,9 +488,16 @@ def test_packed_null_state_idx_isolation(monkeypatch: pytest.MonkeyPatch) -> Non
     torch.testing.assert_close(
         state_pad[used_slots], state_ref[used_slots], atol=0, rtol=0
     )
-    # ... while slot 0 IS touched by the CUDA kernel (documented difference
-    # from the Triton kernel, which skips idx <= 0 entirely).
-    assert not torch.equal(state_pad[0], inp.ssm_state[0])
+    assert calls.k_last_packed.call_count == 2
+    calls.k_last.assert_not_called()
+    assert all(call.args[-1] is False for call in calls.k_last_packed.call_args_list)
+    # The null slot, original slot replaced by padding, and all other unused
+    # slots must remain bitwise unchanged.
+    untouched = torch.ones(inp.ssm_state.shape[0], dtype=torch.bool, device=DEVICE)
+    untouched[used_slots] = False
+    torch.testing.assert_close(
+        state_pad[untouched], inp.ssm_state[untouched], atol=0, rtol=0
+    )
 
 
 # ---------------------------------------------------------------------------

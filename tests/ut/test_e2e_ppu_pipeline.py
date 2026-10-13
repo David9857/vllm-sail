@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "ci" / "ppu_e2e_smoke.sh"
 SELECT = ROOT / "scripts" / "ci" / "ppu_e2e_select.py"
@@ -37,8 +39,8 @@ def test_models_catalog_is_valid_json_with_required_fields() -> None:
 def test_default_matrix_targets_qwen_on_810e() -> None:
     catalog = json.loads(MODELS.read_text())
     qwen = next(e for e in catalog if e["key"] == "qwen3.8-27b")
-    # Checkpoints are read from /nas_aisw/datasets, the internal ("内部github")
-    # NAS root recorded in the model catalog sheet.
+    # Checkpoints are read from /nas_aisw/datasets, the internal NAS root
+    # recorded in the model catalog sheet.
     assert qwen["checkpoint"] == (
         "/nas_aisw/datasets/checkpoints/LLM/Qwen/v3.8/Qwen3.8-27B"
     )
@@ -152,6 +154,30 @@ def test_e2e_workflow_is_reusable_and_manual_and_uses_cpu_runner() -> None:
     assert "contents: read" in text
     # cross-run artifact download needs the actions:read scope.
     assert "actions: read" in text
+
+
+def test_e2e_workflow_only_exposes_model_smoke() -> None:
+    text = WORKFLOW.read_text()
+    workflow = yaml.safe_load(text)
+    trigger = workflow.get("on", workflow.get(True))
+    assert set(trigger) == {"workflow_call", "workflow_dispatch"}
+    for event in trigger.values():
+        assert set(event["inputs"]) == {"build_run_id", "models", "image"}
+    assert set(workflow["jobs"]) == {"prepare", "e2e"}
+    assert "if" not in workflow["jobs"]["prepare"]
+    assert workflow["jobs"]["e2e"]["needs"] == "prepare"
+    for marker in (
+        "device_probe_only",
+        "probe_suite",
+        "probe_sail_commit",
+        "ppu_ops_probe",
+    ):
+        assert marker not in text
+    caller = yaml.safe_load(
+        (ROOT / ".github/workflows/build-ppu-wheels.yaml").read_text()
+    )
+    assert caller["jobs"]["smoke"]["uses"] == "./.github/workflows/e2e-ppu.yaml"
+    assert caller["jobs"]["gate"]["needs"] == ["build", "pin-unit-tests", "smoke"]
 
 
 def test_e2e_workflow_pulls_wheels_by_run_id() -> None:

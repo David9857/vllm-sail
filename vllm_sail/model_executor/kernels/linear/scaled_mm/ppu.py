@@ -57,6 +57,9 @@ def _get_acext_int8_gemm():
     loader/ABI errors visible when the backend is actually requested.
     """
     try:
+        from vllm_sail.utils.acext import load_acext
+
+        load_acext()
         from acext import int8_gemm
     except ModuleNotFoundError as exc:
         if exc.name != "acext":

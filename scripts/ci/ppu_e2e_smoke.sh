@@ -59,10 +59,14 @@ mapfile -t sail_wheels < <(
 ((${#sail_wheels[@]} == 1)) || { echo "expected one vLLM SAIL wheel under ${WHEELS_DIR}"; exit 1; }
 echo "vllm wheel: ${vllm_wheels[0]}"
 echo "sail wheel: ${sail_wheels[0]}"
-# --no-deps keeps the SAIL-built torch/native ABI in the image untouched;
-# --force-reinstall guarantees the freshly built wheels win over any preinstall.
+export PIP_CONSTRAINT="/tmp/ppu-smoke-image-constraints.txt"
+python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" prepare \
+    --sdk /usr/local/PPU_SDK --output /tmp/ppu-smoke-image-stack.json \
+    --constraints "${PIP_CONSTRAINT}"
 python -m pip install --no-deps --force-reinstall "${vllm_wheels[0]}"
 python -m pip install --no-deps --force-reinstall "${sail_wheels[0]}"
+python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" verify \
+    --sdk /usr/local/PPU_SDK --output /tmp/ppu-smoke-image-stack.json
 
 # Test the installed wheel, not the staged source checkout.
 cd /tmp

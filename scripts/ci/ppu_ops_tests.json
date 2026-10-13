@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "selection_rules": {
+    "full": {
+      "paths": [
+        ".github/vllm-main-verified.commit", "CMakeLists.txt", "MANIFEST.in",
+        "pyproject.toml", "setup.py", "tests/conftest.py", "tools/port_upstream_kernels.py",
+        "vllm_sail/__init__.py", "vllm_sail/compat.py", "vllm_sail/envs.py",
+        "vllm_sail/patch/__init__.py", "vllm_sail/patch/bodies.py",
+        "vllm_sail/patch/utils.py", "vllm_sail/platform.py"
+      ],
+      "prefixes": [".github/workflows/", "cmake/", "csrc/", "requirements/", "scripts/ci/", "tests/support/", "vllm_sail/native/"],
+      "globs": ["vllm_sail/patch/*/__init__.py"]
+    },
+    "no_effect": {
+      "paths": ["AGENTS.md", "CONTRIBUTING.md", "LICENSE", "README.md"],
+      "prefixes": ["tests/ut/"],
+      "globs": ["docs/*.md"]
+    },
+    "source_to_tests": [
+      {
+        "id": "fp8-linear-python",
+        "paths": ["vllm_sail/model_executor/kernels/linear/scaled_mm/ppu.py"],
+        "test_ids": ["fp8-linear"]
+      },
+      {
+        "id": "deepseek-indexer-int8-python",
+        "paths": ["vllm_sail/models/deepseek_v4/ops/indexer.py", "vllm_sail/patch/enhancement/models/deepseek_v4.py", "vllm_sail/patch/enhancement/models/deepseek_v4_compressor.py"],
+        "test_ids": ["deepseek-indexer-int8"]
+      },
+      {
+        "id": "fork-quantization-python",
+        "paths": ["vllm_sail/model_executor/layers/quantization/utils/fused_add_rmsnorm_quant.py", "vllm_sail/model_executor/layers/quantization/utils/group_quant.py"],
+        "test_ids": ["fork-quantization"]
+      },
+      {
+        "id": "gdn-decode-python",
+        "paths": ["vllm_sail/attention/pla_decode.py", "vllm_sail/patch/enhancement/attention/gdn.py"],
+        "test_ids": ["gdn-decode"]
+      },
+      {
+        "id": "gdn-decode-helpers",
+        "paths": ["tests/e2e/fork_port/_tolerances.py"],
+        "test_ids": ["gdn-decode"]
+      },
+      {
+        "id": "gdn-prefill-python",
+        "paths": ["vllm_sail/attention/pla_prefill.py", "vllm_sail/patch/enhancement/attention/gdn.py"],
+        "test_ids": ["gdn-prefill"]
+      },
+      {
+        "id": "kda-python",
+        "paths": ["vllm_sail/attention/pla_kda.py", "vllm_sail/patch/enhancement/attention/kda.py"],
+        "test_ids": ["kda"]
+      },
+      {
+        "id": "merge-mla-python",
+        "paths": ["vllm_sail/attention/ops/merge_attn_states.py"],
+        "test_ids": ["merge-mla"]
+      },
+      {
+        "id": "mxfp4-prepare-python",
+        "paths": ["vllm_sail/model_executor/layers/fused_moe/experts/deep_gemm_moe.py", "vllm_sail/model_executor/layers/quantization/utils/mxfp4_utils.py", "vllm_sail/patch/enhancement/fused_moe_ppu.py", "vllm_sail/patch/enhancement/mxfp4.py"],
+        "test_ids": ["mxfp4-prepare"]
+      },
+      {
+        "id": "mxfp8-emulation-python",
+        "paths": ["vllm_sail/model_executor/kernels/linear/mxfp8.py"],
+        "test_ids": ["mxfp8-emulation"]
+      }
+    ]
+  },
+  "test_catalog": [
+    {"id": "activation", "test": "tests/e2e/test_native_activation.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "deepseek-indexer-int8", "test": "tests/e2e/test_deepseek_v4_indexer_int8.py", "boards": ["ppu10"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "deepseek-native", "test": "tests/e2e/test_deepseek_v4_native.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "fp8-linear", "test": "tests/e2e/test_fp8_linear_dispatch.py", "boards": ["ppu15"], "requires": ["deep_gemm", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "fork-quantization", "test": "tests/e2e/test_fork_quantization.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {"test_fused_norm_matches_native_then_quantize": ["ppu15"]}},
+    {"id": "gdn-decode", "test": "tests/e2e/fork_port/test_gdn_pla_decode.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.decode", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "gdn-prefill", "test": "tests/e2e/fork_port/test_gdn_pla_prefill.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.prefill.flashqla", "pla.prefill.flashqla.ops", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "kda", "test": "tests/e2e/fork_port/test_kda.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.decode.kda", "pla.prefill.flashkdapro", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "kimi-mla", "test": "tests/e2e/tier_b/test_kimi_k3.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "merge-mla", "test": "tests/e2e/tier_b/test_merge_and_mla.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "minimax", "test": "tests/e2e/tier_b/test_minimax_m3.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {"test_sparse_full_fp8_index": ["ppu15"]}},
+    {"id": "mxfp4-prepare", "test": "tests/e2e/test_mxfp4_prepare.py", "boards": ["ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "mxfp8-emulation", "test": "tests/e2e/test_mxfp8_emulation.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "norm-quant", "test": "tests/e2e/tier_b/test_norm_quant.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "selective-scan", "test": "tests/e2e/tier_b/test_selective_scan.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}}
+  ],
+  "execution_profiles": {
+    "ppu10": {"runner_group": "k8s-runner-group-cpu-thead", "node_selector": {"board-type": "OAM-810E"}, "nproc_per_node": 1, "group_count": 1},
+    "ppu15": {"runner_group": "k8s-runner-group-cpu-thead", "node_selector": {"board-type": "ZW-M890P"}, "nproc_per_node": 1, "group_count": 1}
+  }
+}

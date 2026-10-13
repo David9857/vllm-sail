@@ -1,0 +1,178 @@
+name: PPU ops tests
+
+on:
+  workflow_call:
+    inputs:
+      build_run_id:
+        type: string
+        required: true
+      matrix:
+        type: string
+        required: true
+      selection_artifact:
+        type: string
+        required: true
+      build_image:
+        type: string
+        required: true
+      expected_vllm_commit:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # Reuse the build index for test tools, not to replace preinstalled device libraries.
+  SAIL_PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple/
+  WHEELS_DIR: /tmp/ops-wheels
+  BUILD_MANIFEST_FILE: /tmp/ops-build/build-manifest.txt
+  SELECTION_FILE: /tmp/ops-selection/selection.json
+  EXPECTED_SAIL_COMMIT: ${{ github.sha }}
+  EXPECTED_VLLM_COMMIT: ${{ inputs.expected_vllm_commit }}
+  EXPECTED_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+  EXPECTED_BUILD_IMAGE: ${{ inputs.build_image }}
+  CI_RUN_ID: ${{ github.run_id }}
+  CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+  RUNTIME_IMAGE: ${{ inputs.image }}
+  DISPATCH_MATRIX: ${{ inputs.matrix }}
+
+jobs:
+  ops-tests:
+    runs-on: k8s-runner-group-cpu-thead
+    timeout-minutes: 90
+    container:
+      image: ${{ inputs.image }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    env:
+      GIT_CONFIG_NOSYSTEM: "1"
+      DEVICE_BOARD: ${{ matrix.board }}
+      DEVICE_GROUP_ID: ${{ matrix.group_id }}
+      DEVICE_RESULTS_DIR: /mnt/wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/ops-tests/${{ matrix.group_id }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare isolated job-local Git configuration
+        id: git-config
+        shell: bash
+        run: |
+          # Checkout writes safe.directory; retain this config through post-job cleanup.
+          config="$(mktemp "${RUNNER_TEMP}/git-config.XXXXXX")"
+          printf 'GIT_CONFIG_GLOBAL=%s\n' "$config" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ppu-wheels-${{ inputs.build_run_id }}
+          path: /tmp/ops-wheels
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ppu-build-diagnostics-${{ inputs.build_run_id }}
+          path: /tmp/ops-build
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.selection_artifact }}
+          path: /tmp/ops-selection
+      - name: Validate complete inputs, routing, and NAS
+        id: prepare
+        run: python scripts/ci/ppu_ops_runner.py prepare
+      - name: Run the operator test group in a fresh single-device container
+        id: scheduler
+        uses: t-head/ppu-scheduler-action@a4e03cbbdb2624f4871fff30d7081b34cbc4b7d4
+        with:
+          image: ${{ inputs.image }}
+          nnodes: 0
+          nproc_per_node: 1
+          namespace: ppu-sched
+          node_selector: ${{ steps.prepare.outputs.node_selector }}
+          timeout_minutes: 60
+          cleanup_policy: always
+          job_suffix: ops-${{ matrix.group_id }}
+          source_dir: /workspace/source
+          artifact_paths: |
+            /tmp/ops-wheels
+            /tmp/ops-build
+            /tmp/ops-selection
+          extra_env: WHEELS_DIR=/workspace/source/ops-wheels,BUILD_MANIFEST_FILE=/workspace/source/ops-build/build-manifest.txt,SELECTION_FILE=/workspace/source/ops-selection/selection.json,DEVICE_RESULTS_DIR=/mnt/wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/ops-tests/${{ matrix.group_id }},DEVICE_BOARD=${{ matrix.board }},DEVICE_GROUP_ID=${{ matrix.group_id }},EXPECTED_SAIL_COMMIT=${{ github.sha }},EXPECTED_VLLM_COMMIT=${{ inputs.expected_vllm_commit }},EXPECTED_BUILD_RUN_ID=${{ inputs.build_run_id }},EXPECTED_BUILD_IMAGE=${{ inputs.build_image }},CI_RUN_ID=${{ github.run_id }},CI_RUN_ATTEMPT=${{ github.run_attempt }},RUNTIME_IMAGE=${{ inputs.image }},SAIL_PIP_INDEX_URL=${{ env.SAIL_PIP_INDEX_URL }}
+          container_options: |
+            privileged: true
+            host_ipc: true
+            host_network: true
+            shm_size: 8Gi
+          # Read the assigned devices in the worker and set visibility before starting Python.
+          command: >-
+            cd /workspace/source &&
+            export CUDA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:?Assigned devices are unavailable}" &&
+            bash scripts/ci/ppu_ops_test.sh
+      - name: Validate NAS results and add control-plane timing
+        if: always()
+        env:
+          SCHEDULER_DURATION: ${{ steps.scheduler.outputs.duration_seconds }}
+          SCHEDULER_STATUS: ${{ steps.scheduler.outputs.job_status }}
+        run: |
+          python -m pip install --index-url "$SAIL_PIP_INDEX_URL" -r requirements/dev.txt
+          python scripts/ci/ppu_ops_runner.py finish
+      - name: Upload complete evidence for the current group
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppu-ops-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group_id }}
+          path: /wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/ops-tests/${{ matrix.group_id }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  ops-summary:
+    needs: ops-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEVICE_BOARD: ${{ fromJSON(inputs.matrix).include[0].board }}
+      DEVICE_GROUP_ID: ${{ fromJSON(inputs.matrix).include[0].group_id }}
+      DEVICE_RESULTS_DIR: /mnt/wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/ops-tests/${{ fromJSON(inputs.matrix).include[0].group_id }}
+      DEVICE_JOB_RESULT: ${{ needs.ops-tests.result }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.selection_artifact }}
+          path: /tmp/ops-selection
+      - uses: actions/download-artifact@v4
+        with:
+          name: ppu-wheels-${{ inputs.build_run_id }}
+          path: /tmp/ops-wheels
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ppu-build-diagnostics-${{ inputs.build_run_id }}
+          path: /tmp/ops-build
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ppu-ops-results-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ops-results
+          merge-multiple: false
+      - name: Validate artifacts for every group and file
+        run: |
+          python -m pip install --index-url "$SAIL_PIP_INDEX_URL" -r requirements/dev.txt
+          python scripts/ci/ppu_ops_runner.py summary --results ops-results
+          test "$DEVICE_JOB_RESULT" = success

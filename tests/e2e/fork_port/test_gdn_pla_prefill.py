@@ -2,31 +2,23 @@
 # Plugin registration precedes imports of patched providers.
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Selection, parity and benchmark tests for the PPU PLA (FlashQLA) GDN prefill.
+"""Selection, numerical, and performance tests for PPU PLA (FlashQLA) GDN prefill.
 
-With ``VLLM_PPU_USE_PLA`` enabled (the default), ``ChunkGatedDeltaRule`` routes
-GDN prefill from the community Triton/FLA chunk kernels to the PPU SAIL CUDA
-FlashQLA kernel (``pla.prefill.flashqla.chunk_gated_delta_rule_fwd``) through
-the ``sail_cuda_pla_prefill`` lazy resolver.
+``VLLM_SAIL_USE_PLA`` defaults to enabled; ``VLLM_PPU_USE_PLA`` is its
+lower-priority alias. ``ChunkGatedDeltaRule`` calls
+``pla.prefill.flashqla.chunk_gated_delta_rule_fwd`` through the ``pla_prefill``
+resolver.
 
-Coverage, in increasing order of hardware requirement:
-
-1. env-var resolution of ``VLLM_PPU_USE_PLA`` (platform-independent);
-2. resolver gating -- the env switch, the PPU platform check and the graceful
-   fallback when ``pla`` is missing -- driven by a stub ``pla`` package, so it
-   runs on any machine (platform-independent);
-3. backend selection -- the ``gdn_prefill_backend`` additional_config key, the
-   head-dim/head-config whitelist and TP sharding, driven by stub platform and
-   config objects (platform-independent);
-4. the ``use_qk_l2norm_in_kernel`` guard in ``forward_pla`` (CPU tensors only);
-5. numerical parity of ``forward_pla`` against ``forward_native`` for both the
-   attention output and the final ssm state (requires PPU + ``pla``);
-6. kernel-level wall-clock time and peak memory of both paths (requires
-   PPU + ``pla``; recorded via stdout, no hard perf assertions).
+Cover environment variables, missing-package fallback, backend selection, TP
+head configurations, duplicate l2norm prevention, and output/final-state parity
+between ``forward_pla`` and ``forward_native``. Performance tests record time
+and memory without performance assertions.
+This entire E2E file requires a real PPU; environment variables and resolver
+stubs also have device-free CPU regressions.
 
 Run on PPU::
 
-    VLLM_PPU_USE_PLA=1 pytest tests/kernels/mamba/test_gdn_pla_prefill_cuda.py
+    VLLM_SAIL_USE_PLA=1 pytest tests/e2e/fork_port/test_gdn_pla_prefill.py
 """
 
 import sys
@@ -137,7 +129,7 @@ def _stub_resolver_env(
     global ``vllm.envs`` and ``vllm.platforms`` untouched, so no state leaks.
     """
     monkeypatch.setattr(
-        sail_cuda_pla_prefill, "envs", SimpleNamespace(VLLM_PPU_USE_PLA=use_pla)
+        sail_cuda_pla_prefill, "envs", SimpleNamespace(VLLM_SAIL_USE_PLA=use_pla)
     )
     monkeypatch.setattr(
         sail_cuda_pla_prefill,
@@ -396,17 +388,28 @@ def test_ppu_pla_env_resolution(
     new_val: str | None,
     expected: bool,
 ) -> None:
-    """``VLLM_PPU_USE_PLA`` gates prefill exactly as it gates decode."""
-    if new_val is None:
-        monkeypatch.delenv("VLLM_PPU_USE_PLA", raising=False)
-    else:
-        monkeypatch.setenv("VLLM_PPU_USE_PLA", new_val)
+    """Verify the canonical name and compatibility alias shared by prefill and decode."""
+    names = ("VLLM_SAIL_USE_PLA", "VLLM_PPU_USE_PLA")
+    for name in names:
+        with monkeypatch.context() as isolated:
+            for candidate in names:
+                isolated.delenv(candidate, raising=False)
+            if new_val is not None:
+                isolated.setenv(name, new_val)
+            assert envs.environment_variables["VLLM_SAIL_USE_PLA"]() is expected
+            assert envs.VLLM_SAIL_USE_PLA is expected
+            assert envs.VLLM_PPU_USE_PLA is expected
 
-    # Call the resolver lambda directly: envs.__getattr__ may be wrapped in
-    # functools.cache after service init, which would bypass monkeypatched
-    # env vars.
-    resolve = envs.environment_variables["VLLM_PPU_USE_PLA"]
-    assert resolve() is expected
+
+@pytest.mark.parametrize(
+    "canonical,alias,expected",
+    [("1", "0", True), ("0", "1", False), ("false", "true", False), ("", "1", False)],
+)
+def test_sail_pla_env_takes_precedence(monkeypatch, canonical, alias, expected):
+    monkeypatch.setenv("VLLM_SAIL_USE_PLA", canonical)
+    monkeypatch.setenv("VLLM_PPU_USE_PLA", alias)
+    assert envs.VLLM_SAIL_USE_PLA is expected
+    assert envs.VLLM_PPU_USE_PLA is expected
 
 
 # ---------------------------------------------------------------------------
@@ -450,9 +453,15 @@ def test_resolver_tolerates_missing_pla(monkeypatch: pytest.MonkeyPatch) -> None
     deployments without `pla` must keep serving.
     """
     _stub_resolver_env(monkeypatch, use_pla=True, is_ppu=True)
-    # None in sys.modules halts the import with ImportError, so this still
-    # fails on a machine that genuinely has `pla` installed.
-    monkeypatch.setitem(sys.modules, "pla", None)
+    # Block cached submodules too, so the missing-package simulation is real;
+    # monkeypatch restores them afterward.
+    for name in (
+        "pla",
+        "pla.prefill",
+        "pla.prefill.flashqla",
+        "pla.prefill.flashqla.ops",
+    ):
+        monkeypatch.setitem(sys.modules, name, None)
 
     assert sail_cuda_pla_prefill.get_sail_cuda_pla_prefill_fwd() is None
     configs = sail_cuda_pla_prefill.get_sail_cuda_pla_prefill_head_configs()
@@ -466,14 +475,14 @@ def test_resolver_honors_env_after_resolution(monkeypatch: pytest.MonkeyPatch) -
 
     first = sail_cuda_pla_prefill.get_sail_cuda_pla_prefill_fwd()
     monkeypatch.setattr(
-        sail_cuda_pla_prefill, "envs", SimpleNamespace(VLLM_PPU_USE_PLA=False)
+        sail_cuda_pla_prefill, "envs", SimpleNamespace(VLLM_SAIL_USE_PLA=False)
     )
     second = sail_cuda_pla_prefill.get_sail_cuda_pla_prefill_fwd()
 
     assert first is stub_fwd
     assert second is None
     monkeypatch.setattr(
-        sail_cuda_pla_prefill, "envs", SimpleNamespace(VLLM_PPU_USE_PLA=True)
+        sail_cuda_pla_prefill, "envs", SimpleNamespace(VLLM_SAIL_USE_PLA=True)
     )
     assert sail_cuda_pla_prefill.get_sail_cuda_pla_prefill_fwd() is stub_fwd
 
