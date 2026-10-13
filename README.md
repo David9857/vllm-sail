@@ -1,7 +1,7 @@
 <h1 align="center">vLLM SAIL</h1>
 
 <p align="center">
-  <strong>LLM inference and serving on T-Head PPU accelerators</strong>
+  <strong>LLM inference and serving on T-Head Zhenwu AI accelerators</strong>
 </p>
 
 <p align="center">
@@ -18,8 +18,8 @@ It connects vLLM's inference engine to the SAIL software stack, bringing PPU
 kernels, attention backends, quantization and model integration to the standard
 vLLM Python API and OpenAI-compatible server.
 
-**SAIL** is the software stack and **PPU** is the hardware platform. The PPU
-card family includes **ZW-810**, **ZW-810E**, and **ZW-890**. The Python
+**SAIL** is the software brand and **Zhenwu (真武)** is the hardware product
+name. The T-Head AI chips are **Zhenwu 810E** and **Zhenwu M890**. The Python
 distribution is `vllm-sail`, the import package is `vllm_sail`, and the vLLM
 plugin name is `ppu`.
 
@@ -51,7 +51,7 @@ for validating a deployment.
 
 | Component | Requirement |
 | --- | --- |
-| Hardware | PPU cards ZW-810, ZW-810E and ZW-890; build targets `ppu_10` and `ppu_15` |
+| Hardware | Zhenwu 810E and Zhenwu M890 AI chips; build targets `ppu_10` and `ppu_15` |
 | Operating system | Linux for PPU builds and inference |
 | Python | 3.10–3.13; choose a version supported by your SDK packages |
 | vLLM | `>=0.31.0,<0.32.0`, built with `VLLM_TARGET_DEVICE=empty` |

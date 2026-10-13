@@ -5,11 +5,14 @@ User-facing overview: [README.md](README.md). Contribution workflow:
 
 ## Project terminology
 
-- Display name: **vLLM SAIL**. **SAIL** is the software stack; **PPU** is the
-  hardware platform. Card names are **ZW-810**, **ZW-810E**, and **ZW-890**.
+- Display name: **vLLM SAIL**. **SAIL** is the software brand; **Zhenwu (真武)**
+  is the hardware product name. Document **Zhenwu 810E** and **Zhenwu M890**
+  T-Head AI chips.
 - Python distribution: `vllm-sail`; import package: `vllm_sail`.
 - Use **SAIL SDK** in prose. Preserve `PPU_SDK`, the `ppu` plugin name,
-  `PPUPlatform`, and device identifiers `PPU-ZW810`, `PPU-ZW810E`, `ZW-M890P`.
+  `PPUPlatform`, and code-facing device identifiers. Explain identifiers such as
+  `PPU-ZW810E` (Zhenwu 810E) and `ZW-M890P` (Zhenwu M890) when documenting
+  configuration names or program output.
 - Plugin runtime and build variables use `VLLM_SAIL_*`. Runtime variables retain
   corresponding `VLLM_PPU_*` aliases, with SAIL taking precedence. Build variables
   accept only the `VLLM_SAIL_*` names.
