@@ -496,16 +496,16 @@ def test_prepare_rejects_scheduler_name_truncation_before_nas(
     monkeypatch.setattr(runner.sys, "argv", ["runner", "prepare"])
 
     def unexpected_nas(_):
-        pytest.fail("作业名不合法时不应准备 NAS 或派发设备")
+        pytest.fail("Invalid job names must not prepare NAS or dispatch devices")
 
     monkeypatch.setattr(runner, "require_nas", unexpected_nas)
-    with pytest.raises(ValueError, match="作业名"):
+    with pytest.raises(ValueError, match="job name"):
         runner.main()
 
 
 def test_reusable_workflow_contract():
     path = ROOT / ".github/workflows/_ppu-ops-tests.yaml"
-    assert path.is_file(), "缺少 reusable workflow"
+    assert path.is_file(), "Missing reusable workflow"
     workflow = yaml.safe_load(path.read_text())
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     jobs = workflow["jobs"]
@@ -556,7 +556,9 @@ def test_container_checkout_uses_isolated_regular_git_config(
     assert "GIT_CONFIG_GLOBAL" not in job_env
     steps = job["steps"]
     prepare = next((s for s in steps if s.get("id") == "git-config"), None)
-    assert prepare is not None, "checkout 前必须准备可写的独立 Git 配置"
+    assert prepare is not None, (
+        "Prepare a writable, isolated Git config before checkout"
+    )
     checkout = next(s for s in steps if s.get("uses") == "actions/checkout@v4")
     assert steps.index(prepare) < steps.index(checkout)
     assert "if" not in prepare
@@ -767,7 +769,7 @@ def test_worker_rejects_missing_allocation_before_python(
     result = worker_launch(env)
     assert result.returncode != 0
     assert "NVIDIA_VISIBLE_DEVICES" in result.stderr
-    assert result.stdout == "", "分配信息缺失时不应启动 Python"
+    assert result.stdout == "", "Python must not start without allocation metadata"
 
 
 def test_summary_does_not_inherit_container_git_config():

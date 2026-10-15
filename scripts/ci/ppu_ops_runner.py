@@ -36,7 +36,7 @@ require = select.require
 def result_path(run_id, attempt, group_id, *, pod):
     select.decimal(run_id)
     select.decimal(attempt)
-    require(group_id in {b + "-0" for b in select.BOARDS}, "非法执行组")
+    require(group_id in {b + "-0" for b in select.BOARDS}, "Invalid execution group")
     return (
         Path("/mnt/wl_nas" if pod else "/wl_nas")
         / "devops"
@@ -47,18 +47,23 @@ def result_path(run_id, attempt, group_id, *, pod):
 
 
 def require_nas(mount):
-    require(any(os.path.ismount(p) for p in (mount, mount / "devops")), "NAS 挂载缺失")
+    require(
+        any(os.path.ismount(p) for p in (mount, mount / "devops")), "Missing NAS mount"
+    )
     require(
         (mount / "devops").is_dir() and os.access(mount / "devops", os.W_OK),
-        "NAS 不可写",
+        "NAS is not writable",
     )
 
 
 def copy_test_tree(repo, isolated):
     repo, isolated = Path(repo).resolve(), Path(isolated).resolve()
-    require(not isolated.is_relative_to(repo), "隔离树不得位于 checkout 内")
+    require(
+        not isolated.is_relative_to(repo),
+        "Isolated test tree must be outside the checkout",
+    )
     for path in (repo / "tests").rglob("*"):
-        require(not path.is_symlink(), "测试树不得包含符号链接")
+        require(not path.is_symlink(), "Test tree must not contain symbolic links")
     shutil.copytree(
         repo / "tests",
         isolated / "tests",
@@ -125,15 +130,15 @@ def validate_file_evidence(directory, entry, board):
     report = json.loads(node_path.read_bytes())
     load(ROOT / "tests/support/ppu_ci.py").validate_node_report(report, entry, board)
     log = directory / "logs" / (entry["id"] + ".log")
-    require(log.is_file() and log.stat().st_size > 0, "缺少文件日志")
+    require(log.is_file() and log.stat().st_size > 0, "Missing test file log")
     try:
         tree = ET.parse(directory / "junit" / (entry["id"] + ".xml"))
     except ET.ParseError as error:
-        raise ValueError("JUnit 损坏") from error
+        raise ValueError("Malformed JUnit XML") from error
     cases = tree.findall(".//testcase")
     require(
         not any(tree.findall(".//" + tag) for tag in ("failure", "error", "skipped")),
-        "JUnit 含失败或跳过",
+        "JUnit contains failures, errors, or skips",
     )
     actual = [(case.get("classname"), case.get("name")) for case in cases]
     expected = []
@@ -142,7 +147,7 @@ def validate_file_evidence(directory, entry, board):
         expected.append(
             (".".join([parts[0][:-3].replace("/", "."), *parts[1:-1]]), parts[-1])
         )
-    require(sorted(actual) == sorted(expected), "JUnit 节点覆盖不符")
+    require(sorted(actual) == sorted(expected), "JUnit node coverage mismatch")
     return report
 
 
@@ -192,7 +197,7 @@ def run_files(
                 validate_file_evidence(output, entry, board)
                 outcome = "success"
             except (OSError, ValueError, KeyError, TypeError) as error:
-                log.write(f"\nCI 证据校验失败: {error}\n")
+                log.write(f"\nCI evidence validation failed: {error}\n")
         results.append(
             {
                 "test_id": test_id,
@@ -206,7 +211,7 @@ def run_files(
 
 def runtime_profile(runtime, packages, sdk_output, smi_output):
     driver = re.search(r"Driver Version:\s*([0-9][0-9.]*)", smi_output)
-    require(driver is not None, "无法可靠取得驱动身份")
+    require(driver is not None, "Unable to determine the driver identity reliably")
     profile = {
         "capability": runtime["capability"],
         "runtime_env": runtime["runtime_env"],
@@ -243,7 +248,7 @@ def validate_group(
     summary = read("summary.json")
     group_id = summary["group_id"]
     planned = next((g for g in original["groups"] if g["group_id"] == group_id), None)
-    require(planned is not None, "未知执行组")
+    require(planned is not None, "Unknown execution group")
     board = planned["board"]
     identity = {
         "run_id": select.decimal(run_id),
@@ -257,38 +262,42 @@ def validate_group(
         require(
             value.get("schema") == 1
             and all(value.get(k) == v for k, v in identity.items()),
-            f"报告身份不符: {name}",
+            f"Report identity mismatch: {name}",
         )
     if require_success:
         require(
             summary["status"] == "success"
             and summary["failure_stage"] is None
             and summary["reason"] is None,
-            "执行组未成功",
+            "Execution group did not succeed",
         )
-    require(read("selection.json") == original, "原始选择清单被改写")
+    require(read("selection.json") == original, "Original selection was modified")
     environment = read("environment.json")
     select.validate_runtime_profile(environment["profile"])
     require(
-        environment["runtime_image"] == original["runtime_image"], "运行镜像证据不符"
+        environment["runtime_image"] == original["runtime_image"],
+        "Runtime image evidence mismatch",
     )
-    require(type(environment["expanded"]) is bool, "扩大标志非法")
+    require(type(environment["expanded"]) is bool, "Invalid expansion flag")
     require(
         environment["expansion_reason"]
         == ("runtime_environment_changed" if environment["expanded"] else None),
-        "扩大原因不符",
+        "Expansion reason mismatch",
     )
     expected = effective_selection(
         config, original, original_bytes, board, environment["expanded"]
     )
     effective = read("effective-selection.json")
-    require(effective == expected, "实际清单缺失、重复或未保留原计划")
+    require(
+        effective == expected,
+        "Effective selection is missing, duplicated, or does not preserve the original plan",
+    )
     group = next(g for g in effective["groups"] if g["group_id"] == group_id)
     catalog = {t["id"]: t for t in config["test_catalog"]}
     timings = read("timings.json")
     for key in ("config_sha256", "build_fingerprint", "runtime_image"):
-        require(timings[key] == original[key], "计时归属不符")
-    require(timings["nproc_per_node"] == 1, "计时卡数不符")
+        require(timings[key] == original[key], "Timing metadata identity mismatch")
+    require(timings["nproc_per_node"] == 1, "Timing device count mismatch")
     select.keys(
         timings["phases"],
         (
@@ -303,24 +312,24 @@ def validate_group(
         require(
             (value is None and bool(timings.get("timing_error")))
             or (type(value) in (int, float) and math.isfinite(value) and value >= 0),
-            "计时缺失或非法",
+            "Missing or invalid timing",
         )
     require(
         [r["test_id"] for r in timings["files"]] == group["test_ids"],
-        "少执行或重复执行文件",
+        "Missing or duplicate test file execution",
     )
     for record in timings["files"]:
         entry = catalog[record["test_id"]]
         require(
             record["file"] == entry["test"] and record["outcome"] == "success",
-            "文件未成功",
+            "Test file did not succeed",
         )
         duration = record["duration_seconds"]
         require(
             type(duration) in (int, float)
             and math.isfinite(duration)
             and duration >= 0,
-            "文件计时非法",
+            "Invalid test file timing",
         )
         validate_file_evidence(directory, entry, board)
     fingerprint = select.build_fingerprint(
@@ -330,17 +339,20 @@ def validate_group(
         expected_vllm_commit=original["build_fingerprint"]["vllm_commit"],
         build_image=original["build_fingerprint"]["build_image"],
     )
-    require(fingerprint == original["build_fingerprint"], "构建指纹不符")
+    require(fingerprint == original["build_fingerprint"], "Build fingerprint mismatch")
     return group_id
 
 
 def validate_results(config, original_bytes, directories, run_id, attempt):
     expected = [g["group_id"] for g in json.loads(original_bytes)["groups"]]
-    require(bool(expected), "汇总缺少执行组")
+    require(bool(expected), "Summary is missing execution groups")
     actual = [
         validate_group(config, original_bytes, d, run_id, attempt) for d in directories
     ]
-    require(sorted(actual) == sorted(expected), "缺少、重复或未知执行组")
+    require(
+        sorted(actual) == sorted(expected),
+        "Missing, duplicate, or unknown execution groups",
+    )
 
 
 def read_inputs(env):
@@ -359,8 +371,11 @@ def read_inputs(env):
         "CI_RUN_ATTEMPT",
         "RUNTIME_IMAGE",
     )
-    require(all(env.get(k) for k in required), "缺少设备执行输入")
-    require(env["EXPECTED_BUILD_RUN_ID"] == env["CI_RUN_ID"], "设备链不能复用历史构建")
+    require(all(env.get(k) for k in required), "Missing device execution inputs")
+    require(
+        env["EXPECTED_BUILD_RUN_ID"] == env["CI_RUN_ID"],
+        "Device workflow must not reuse a previous build",
+    )
     selection_file = Path(env["SELECTION_FILE"]).resolve()
     config_file = selection_file.with_name("ppu_ops_tests.json")
     environment_file = selection_file.with_name("ppu_ops_environment.json")
@@ -376,11 +391,11 @@ def read_inputs(env):
     )
     require(
         config_raw == (ROOT / "scripts/ci/ppu_ops_tests.json").read_bytes(),
-        "artifact 配置与 checkout 不同",
+        "Artifact configuration differs from the checkout",
     )
     require(
         environment_raw == (ROOT / "scripts/ci/ppu_ops_environment.json").read_bytes(),
-        "artifact 环境与 checkout 不同",
+        "Artifact environment differs from the checkout",
     )
     select.validate_config(config, ROOT)
     select.validate_selection(
@@ -392,21 +407,30 @@ def read_inputs(env):
         build_image=env["EXPECTED_BUILD_IMAGE"],
         runtime_image=env["RUNTIME_IMAGE"],
         expected_vllm_commit=env["EXPECTED_VLLM_COMMIT"],
+        repo=ROOT,
     )
     if "DISPATCH_MATRIX" in env:
         require(
             json.loads(env["DISPATCH_MATRIX"]) == original["matrix"],
-            "调度矩阵与选择清单不符",
+            "Dispatch matrix does not match the selection",
         )
-    require(env["DEVICE_GROUP_ID"] == env["DEVICE_BOARD"] + "-0", "板型/组身份不符")
+    require(
+        env["DEVICE_GROUP_ID"] == env["DEVICE_BOARD"] + "-0",
+        "Board or group identity mismatch",
+    )
     group = next(
         (g for g in original["groups"] if g["group_id"] == env["DEVICE_GROUP_ID"]), None
     )
-    require(group is not None and bool(group["files"]), "未知或空执行组")
+    require(
+        group is not None and bool(group["files"]), "Unknown or empty execution group"
+    )
     expected_path = result_path(
         env["CI_RUN_ID"], env["CI_RUN_ATTEMPT"], env["DEVICE_GROUP_ID"], pod=True
     )
-    require(env["DEVICE_RESULTS_DIR"] == str(expected_path), "设备结果目录不符")
+    require(
+        env["DEVICE_RESULTS_DIR"] == str(expected_path),
+        "Device results directory mismatch",
+    )
     select.validate_fingerprint(original["build_fingerprint"])
     manifest = select.load_sibling("ppu_wheel_manifest").verify(
         Path(env["WHEELS_DIR"]),
@@ -420,7 +444,10 @@ def read_inputs(env):
         expected_vllm_commit=env["EXPECTED_VLLM_COMMIT"],
         build_image=env["EXPECTED_BUILD_IMAGE"],
     )
-    require(actual == original["build_fingerprint"], "执行前构建指纹不符")
+    require(
+        actual == original["build_fingerprint"],
+        "Build fingerprint mismatch before execution",
+    )
     return raw, config_file, config, environment, manifest
 
 
@@ -437,7 +464,7 @@ def command(args):
     return result.stdout.strip() or result.stderr.strip()
 smi = shutil.which("ppu-smi") or shutil.which("nvidia-smi")
 if not smi:
-    raise RuntimeError("缺少 SMI 驱动探针")
+    raise RuntimeError("Missing SMI driver probe")
 observed = dict(runtime=runtime, packages=packages, sdk_output=command(["hgcc", "--version"]), smi_output=command([smi]))
 with open(os.environ["PPU_CI_OBSERVATION"], "w") as stream:
     json.dump(observed, stream, indent=2)
@@ -449,14 +476,14 @@ def execute(env):
     output = result_path(
         env["CI_RUN_ID"], env["CI_RUN_ATTEMPT"], env["DEVICE_GROUP_ID"], pod=True
     )
-    require(str(output) == env["DEVICE_RESULTS_DIR"], "结果路径非法")
+    require(str(output) == env["DEVICE_RESULTS_DIR"], "Invalid results path")
     require_nas(Path("/mnt/wl_nas"))
     probe = json.loads((output / "cpu-probe.json").read_bytes())
     require(
         probe["run_id"] == env["CI_RUN_ID"]
         and probe["run_attempt"] == env["CI_RUN_ATTEMPT"]
         and probe["group_id"] == env["DEVICE_GROUP_ID"],
-        "NAS 探针身份不符",
+        "NAS probe identity mismatch",
     )
     select.write_json(output / "pod-probe.json", probe)
     identity = {
@@ -471,7 +498,7 @@ def execute(env):
         **identity,
         "status": "failure",
         "failure_stage": "inputs",
-        "reason": "尚未完成",
+        "reason": "Not completed",
     }
     timings = {
         "schema": 1,
@@ -488,7 +515,7 @@ def execute(env):
                 "total_seconds",
             )
         },
-        "timing_error": "调度事件尚不可用；设备单调时钟不跨主机相减",
+        "timing_error": "Scheduling events are unavailable; device monotonic clocks cannot be compared across hosts",
     }
     started = time.monotonic()
     stage = "inputs"
@@ -503,6 +530,9 @@ def execute(env):
         with tempfile.TemporaryDirectory(prefix="ppu-ops-", dir="/tmp") as temporary:
             isolated = (Path(temporary) / "isolated").resolve()
             copy_test_tree(ROOT, isolated)
+            # pytest's node guard needs the same discovered catalog as selection.
+            config_path = isolated / "ppu_ops_tests.json"
+            select.write_json(config_path, config)
             child_env = clean_environment(env, ROOT, isolated)
             stage = "install"
             phase = time.monotonic()
@@ -564,7 +594,9 @@ def execute(env):
             phase = time.monotonic()
             # Preflight all dependencies for this board to allow safe expansion after environment changes.
             entries = [
-                t for t in config["test_catalog"] if identity["board"] in t["boards"]
+                t
+                for t in config["test_catalog"]
+                if identity["board"] in select.runnable_boards(config, t)
             ]
             child_env["PPU_CI_REQUIRES"] = json.dumps(
                 sorted({r for t in entries for r in t["requires"]})
@@ -633,18 +665,21 @@ def execute(env):
 def scheduler_names(groups, owner, run_id, attempt):
     # Match scripts/submit.sh in pinned action a4e03cb: 20-character owner/suffix, 52-character full name.
     owner = re.sub(r"[^a-z0-9-]", "-", owner.lower()).strip("-")[:20].rstrip("-")
-    require(bool(owner), "作业名缺少仓库 owner")
+    require(bool(owner), "Job name is missing the repository owner")
     names = []
     for group in groups:
         suffix = "ops-" + group["group_id"]
         require(
             len(suffix) <= 20 and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", suffix),
-            "作业名后缀不合法",
+            "Invalid job name suffix",
         )
         name = f"ppu-{owner}-{run_id}-{attempt}-{suffix}"[:52].rstrip("-")
-        require(name.endswith("-" + suffix), "作业名截断会丢失执行组后缀")
+        require(
+            name.endswith("-" + suffix),
+            "Truncating the job name would remove the execution group suffix",
+        )
         names.append(name)
-    require(len(names) == len(set(names)), "作业名不唯一")
+    require(len(names) == len(set(names)), "Job names are not unique")
     return names
 
 
@@ -688,18 +723,18 @@ def main():
         require(
             (output / "cpu-probe.json").read_bytes()
             == (output / "pod-probe.json").read_bytes(),
-            "NAS 双向探针不一致",
+            "CPU and Pod NAS probes do not match",
         )
         timings = json.loads((output / "timings.json").read_bytes())
         started = json.loads((output / "orchestration.json").read_bytes())["started"]
         timings["phases"]["total_seconds"] = time.monotonic() - started
         timings["timing_error"] = (
-            "调度 action 未提供设备起止事件；queue_seconds/device_occupied_seconds 为 null"
+            "Scheduling action did not provide device start/end events; queue_seconds/device_occupied_seconds are null"
         )
         select.write_json(output / "timings.json", timings)
         validate_group(config, raw, output, env["CI_RUN_ID"], env["CI_RUN_ATTEMPT"])
     else:
-        require(args.results is not None, "缺少 artifact 结果目录")
+        require(args.results is not None, "Missing artifact results directory")
         directories = [p for p in args.results.iterdir() if p.is_dir()]
         validate_results(
             config, raw, directories, env["CI_RUN_ID"], env["CI_RUN_ATTEMPT"]

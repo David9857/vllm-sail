@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Explicit PPU operator test selection, config validation, and cumulative Git diffs using only the standard library."""
+"""Discover PPU operator tests, apply routing overrides, and select cumulative Git diffs using only the standard library."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
 BOARDS = {"ppu10": "OAM-810E", "ppu15": "ZW-M890P"}
 ID_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 IMAGE_PATTERN = r"[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}"
@@ -27,34 +29,40 @@ def require(condition, message):
 def keys(value, expected):
     require(
         isinstance(value, dict) and set(value) == set(expected),
-        f"字段不合法: {expected}",
+        f"Invalid fields: {expected}",
     )
 
 
 def strings(value, *, nonempty=False):
-    require(isinstance(value, list), "必须为数组")
-    require(all(isinstance(x, str) and x for x in value), "必须为非空字符串")
-    require(len(value) == len(set(value)), "数组包含重复项")
-    require(not nonempty or bool(value), "数组不得为空")
+    require(isinstance(value, list), "Expected an array")
+    require(all(isinstance(x, str) and x for x in value), "Expected nonempty strings")
+    require(len(value) == len(set(value)), "Array contains duplicates")
+    require(not nonempty or bool(value), "Array must not be empty")
     return value
 
 
 def safe_path(value, *, pattern=False):
-    require(isinstance(value, str) and bool(value), "路径为空")
-    require(not value.startswith(("/", "-")), "路径必须相对仓库")
-    require(not any(c in value for c in ("\\", "\0", ":", "\n", "\r")), "非法路径字符")
+    require(isinstance(value, str) and bool(value), "Path must not be empty")
+    require(not value.startswith(("/", "-")), "Path must be relative to the repository")
+    require(
+        not any(c in value for c in ("\\", "\0", ":", "\n", "\r")),
+        "Invalid path character",
+    )
     require(
         all(p not in ("", ".", "..") for p in value.rstrip("/").split("/")),
-        "非法路径分量",
+        "Invalid path component",
     )
-    require(pattern or not any(c in value for c in "*?[]"), "精确路径不能包含 glob")
+    require(
+        pattern or not any(c in value for c in "*?[]"),
+        "Exact paths must not contain glob patterns",
+    )
     return value
 
 
 def sha(value):
     require(
         isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value),
-        "需要不可变 40 位 SHA",
+        "Expected an immutable 40-character SHA",
     )
     return value
 
@@ -62,7 +70,7 @@ def sha(value):
 def digest_image(value):
     require(
         isinstance(value, str) and re.fullmatch(IMAGE_PATTERN, value),
-        "镜像必须为完整 digest 引用",
+        "Image must use a complete digest reference",
     )
     return value
 
@@ -70,7 +78,7 @@ def digest_image(value):
 def decimal(value):
     require(
         isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value),
-        "需要正整数身份字符串",
+        "Expected a positive integer identity string",
     )
     return value
 
@@ -88,10 +96,15 @@ def validate_profiles(profiles):
     for board, name in BOARDS.items():
         item = profiles[board]
         keys(item, ("runner_group", "node_selector", "nproc_per_node", "group_count"))
-        require(item["runner_group"] == "k8s-runner-group-cpu-thead", "未知 CPU runner")
-        require(item["node_selector"] == {"board-type": name}, "板型路由不合法")
+        require(
+            item["runner_group"] == "k8s-runner-group-cpu-thead", "Unknown CPU runner"
+        )
+        require(item["node_selector"] == {"board-type": name}, "Invalid board routing")
         for key in ("nproc_per_node", "group_count"):
-            require(type(item[key]) is int and item[key] == 1, "首版仅允许单卡单组")
+            require(
+                type(item[key]) is int and item[key] == 1,
+                "Only one device and one group are currently supported",
+            )
 
 
 def validate_ut_isolation(repo):
@@ -127,76 +140,168 @@ def validate_ut_isolation(repo):
                         "." * node.level + (node.module or ""), package
                     )
                 except (ImportError, ValueError) as error:
-                    raise ValueError(f"无法解析 import: {path}") from error
+                    raise ValueError(f"Unable to resolve import: {path}") from error
                 references += [module] + [module + "." + a.name for a in node.names]
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                 references.append(node.value.replace("/", "."))
             require(
                 not any("tests.ut" in ref for ref in references),
-                f"禁止生产/设备代码依赖 UT: {path}",
+                f"Production and device code must not depend on CPU UT: {path}",
             )
+
+
+def discover_catalog(config, repo):
+    """Add unlisted test files without importing device packages.
+
+    JSON entries retain board/dependency overrides and stable existing IDs.
+    New files default to both boards and the common runtime dependencies.
+    A file can declare a literal PPU_CI_MIN_DEVICES for resource requirements
+    beyond the current single-device runner; exclusions are reported explicitly.
+    """
+    repo = Path(repo).resolve()
+    catalog = config["test_catalog"]
+    require(isinstance(catalog, list), "Test catalog must be an array")
+    listed = {}
+    for item in catalog:
+        require(isinstance(item, dict), "Test configuration must be an object")
+        listed[safe_path(item.get("test"))] = item
+    discovered = set()
+    for path in sorted((repo / "tests/e2e").rglob("test_*.py")):
+        require(
+            path.resolve().is_relative_to(repo) and path.is_file(),
+            "Test path escapes the repository",
+        )
+        relative = path.relative_to(repo).as_posix()
+        devices = 1
+        declarations = []
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            if any(
+                isinstance(t, ast.Name) and t.id == "PPU_CI_MIN_DEVICES"
+                for t in targets
+            ):
+                require(
+                    isinstance(node.value, ast.Constant)
+                    and type(node.value.value) is int
+                    and node.value.value > 0,
+                    f"{relative}: PPU_CI_MIN_DEVICES must be a positive integer literal",
+                )
+                declarations.append(node.value.value)
+        require(
+            len(declarations) <= 1,
+            f"{relative}: Duplicate device requirement declaration",
+        )
+        if declarations:
+            devices = declarations[0]
+        discovered.add(relative)
+        item = listed.get(relative)
+        if item is None:
+            name = re.sub(r"[^a-z0-9]+", "-", relative[10:-3].lower()).strip("-")
+            item = {
+                "id": f"auto-{name}-{checksum(relative.encode())[:8]}",
+                "test": relative,
+                "boards": sorted(config["execution_profiles"]),
+                "requires": ["torch", "triton", "vllm", "vllm_sail"],
+                "board_overrides": {},
+            }
+            catalog.append(item)
+        # Keep overrides and source IDs even when no current profile can run them.
+        # Resource metadata is derived from source, never persisted to the JSON.
+        if devices > 1:
+            item["min_devices"] = devices
+        else:
+            item.pop("min_devices", None)
+        if not runnable_boards(config, item):
+            print(
+                f"PPU CI excludes {relative}: requires {devices} devices; "
+                "current execution profiles cannot run it",
+                file=sys.stderr,
+            )
+    return discovered
+
+
+def runnable_boards(config, item):
+    return sorted(
+        board
+        for board, profile in config["execution_profiles"].items()
+        if board in item["boards"]
+        and profile["nproc_per_node"] >= item.get("min_devices", 1)
+    )
 
 
 def validate_config(config, repo):
     repo = Path(repo).resolve()
     keys(config, ("schema", "selection_rules", "test_catalog", "execution_profiles"))
-    require(type(config["schema"]) is int and config["schema"] == 1, "未知 schema")
+    require(type(config["schema"]) is int and config["schema"] == 1, "Unknown schema")
     validate_profiles(config["execution_profiles"])
+    discovered = discover_catalog(config, repo)
     catalog = config["test_catalog"]
-    require(isinstance(catalog, list) and bool(catalog), "缺少测试目录")
+    require(isinstance(catalog, list) and bool(catalog), "Missing test catalog")
     ids, tests = set(), set()
     for item in catalog:
-        keys(item, ("id", "test", "boards", "requires", "board_overrides"))
+        expected_keys = {"id", "test", "boards", "requires", "board_overrides"}
+        if "min_devices" in item:
+            expected_keys.add("min_devices")
+        keys(item, expected_keys)
         require(
             isinstance(item["id"], str) and re.fullmatch(ID_PATTERN, item["id"]),
-            "非法测试 ID",
+            "Invalid test ID",
         )
-        require(item["id"] not in ids, "重复测试 ID")
+        require(item["id"] not in ids, "Duplicate test ID")
         ids.add(item["id"])
         path = safe_path(item["test"])
         require(
-            path.startswith("tests/e2e/") and path not in tests, "重复或非法测试路径"
+            path.startswith("tests/e2e/") and path not in tests,
+            "Duplicate or invalid test path",
         )
         tests.add(path)
         actual = (repo / path).resolve()
         require(
-            actual.is_relative_to(repo) and actual.is_file(), "测试路径不存在或逃逸仓库"
+            actual.is_relative_to(repo) and actual.is_file(),
+            "Test path does not exist or escapes the repository",
         )
         boards = set(strings(item["boards"], nonempty=True))
-        require(boards <= BOARDS.keys(), "未知适用板型")
+        require(boards <= BOARDS.keys(), "Unknown supported board")
         requires = strings(item["requires"], nonempty=True)
-        require(requires == sorted(requires), "依赖必须排序")
+        require(requires == sorted(requires), "Dependencies must be sorted")
         require(
             all(re.fullmatch(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*", x) for x in requires),
-            "非法 import 名",
+            "Invalid import name",
         )
         required = {"torch", "triton", "vllm", "vllm_sail"}
         if item["id"] in {"gdn-decode", "gdn-prefill", "kda"}:
             required.add("pla")
-        require(required <= set(requires), "缺少必需依赖")
+        require(required <= set(requires), "Missing required dependencies")
         functions = {
             n.name
             for n in ast.walk(ast.parse(actual.read_text(encoding="utf-8")))
             if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
             and n.name.startswith("test_")
         }
-        require(bool(functions), "测试文件无测试函数")
+        require(bool(functions), "Test file contains no test functions")
         overrides = item["board_overrides"]
-        require(isinstance(overrides, dict), "非法板型例外")
+        require(isinstance(overrides, dict), "Invalid board overrides")
         for function, supported in overrides.items():
-            require(function in functions, "失效函数例外")
             require(
-                set(strings(supported, nonempty=True)) <= boards, "例外超出文件板型"
+                function in functions, "Override references an unknown test function"
+            )
+            require(
+                set(strings(supported, nonempty=True)) <= boards,
+                "Override includes boards unsupported by the file",
             )
         for board in boards:
             require(
                 any(board in overrides.get(f, boards) for f in functions),
-                "板型没有适用函数",
+                "Board has no applicable test functions",
             )
-    discovered = {
-        p.relative_to(repo).as_posix() for p in (repo / "tests/e2e").rglob("test_*.py")
-    }
-    require(discovered == tests, f"测试目录不完整: {sorted(discovered ^ tests)}")
+    require(
+        discovered == tests, f"Incomplete test catalog: {sorted(discovered ^ tests)}"
+    )
     rules = config["selection_rules"]
     keys(rules, ("full", "no_effect", "source_to_tests"))
     for category in ("full", "no_effect"):
@@ -209,10 +314,10 @@ def validate_config(config, repo):
                     require(
                         (repo / path).is_file()
                         and (repo / path).resolve().is_relative_to(repo),
-                        "精确规则路径不存在或逃逸",
+                        "Exact rule path does not exist or escapes the repository",
                     )
                 if kind == "prefixes":
-                    require(path.endswith("/"), "目录前缀必须以 / 结尾")
+                    require(path.endswith("/"), "Directory prefix must end with /")
                 if category == "no_effect":
                     # This bounds the no-effect policy; it is not another test-selection mapping.
                     allowed = (
@@ -232,34 +337,42 @@ def validate_config(config, repo):
                         or (kind == "prefixes" and path == "tests/ut/")
                         or (kind == "globs" and path == "docs/*.md")
                     )
-                    require(allowed, "未批准的无影响规则")
+                    require(allowed, "Unapproved no-effect rule")
     rule_ids = set()
-    require(isinstance(rules["source_to_tests"], list), "局部规则必须为数组")
+    require(
+        isinstance(rules["source_to_tests"], list),
+        "Source-to-test rules must be an array",
+    )
     for rule in rules["source_to_tests"]:
         keys(rule, ("id", "paths", "test_ids"))
         require(
             isinstance(rule["id"], str) and re.fullmatch(ID_PATTERN, rule["id"]),
-            "非法规则 ID",
+            "Invalid rule ID",
         )
-        require(rule["id"] not in rule_ids, "重复规则 ID")
+        require(rule["id"] not in rule_ids, "Duplicate rule ID")
         rule_ids.add(rule["id"])
         require(
-            set(strings(rule["test_ids"], nonempty=True)) <= ids, "规则引用未知测试"
+            set(strings(rule["test_ids"], nonempty=True)) <= ids,
+            "Rule references an unknown test",
         )
         for path in strings(rule["paths"], nonempty=True):
             safe_path(path)
             require(
                 (repo / path).is_file()
                 and (repo / path).resolve().is_relative_to(repo),
-                "悬空源码路径",
+                "Source path does not exist or escapes the repository",
             )
-            require(not matches(path, rules["full"]), "局部规则被全量覆盖")
+            require(
+                not matches(path, rules["full"]),
+                "Source-to-test rule is shadowed by a full-selection rule",
+            )
     validate_ut_isolation(repo)
     routed = route_tests(config, sorted(ids))
     pairs = [(test, g["board"]) for g in routed["groups"] for test in g["test_ids"]]
-    expected = {(t["id"], b) for t in catalog for b in t["boards"]}
+    expected = {(t["id"], b) for t in catalog for b in runnable_boards(config, t)}
     require(
-        len(pairs) == len(set(pairs)) and set(pairs) == expected, "路由不完整或重复"
+        len(pairs) == len(set(pairs)) and set(pairs) == expected,
+        "Incomplete or duplicate routing",
     )
 
 
@@ -300,6 +413,10 @@ def select_tests(config, paths, *, diff_complete, force_full, environment_matche
             reasons.add("unmapped_path")
     if full:
         selected = {t["id"] for t in catalog}
+    runnable = {t["id"] for t in catalog if runnable_boards(config, t)}
+    if selected - runnable:
+        reasons.add("insufficient_devices")
+    selected &= runnable
     return {
         "mode": "full" if full else "subset" if selected else "none",
         "test_ids": sorted(selected),
@@ -313,16 +430,18 @@ def select_tests(config, paths, *, diff_complete, force_full, environment_matche
 def route_tests(config, test_ids):
     validate_profiles(config["execution_profiles"])
     catalog = {t["id"]: t for t in config["test_catalog"]}
-    require(set(test_ids) <= catalog.keys(), "未知测试 ID")
+    require(set(test_ids) <= catalog.keys(), "Unknown test ID")
     groups, matrix = [], []
     for test_id in test_ids:
         require(
             bool(catalog[test_id]["boards"])
             and set(catalog[test_id]["boards"]) <= BOARDS.keys(),
-            "无有效路由",
+            "No valid route",
         )
     for board in sorted(BOARDS):
-        ids = sorted(t for t in set(test_ids) if board in catalog[t]["boards"])
+        ids = sorted(
+            t for t in set(test_ids) if board in runnable_boards(config, catalog[t])
+        )
         if ids:
             groups.append(
                 {
@@ -389,44 +508,55 @@ def validate_environment(environment):
     )
     require(
         type(environment["schema"]) is int and environment["schema"] == 1,
-        "环境 schema 错误",
+        "Invalid environment schema",
     )
-    require(type(environment["qualified"]) is bool, "qualified 必须为 boolean")
+    require(type(environment["qualified"]) is bool, "qualified must be a boolean")
     build = environment["build"]
     if build is not None:
         validate_fingerprint(build)
     if environment["runtime_image"] is not None:
         digest_image(environment["runtime_image"])
-    require(isinstance(environment["profiles"], dict), "环境 profiles 必须为对象")
-    require(environment["profiles"].keys() <= BOARDS.keys(), "未知环境板型")
+    require(
+        isinstance(environment["profiles"], dict),
+        "Environment profiles must be an object",
+    )
+    require(
+        environment["profiles"].keys() <= BOARDS.keys(), "Unknown environment board"
+    )
     for profile in environment["profiles"].values():
         validate_runtime_profile(profile)
     evidence = environment["evidence"]
-    require(isinstance(evidence, list), "证据必须为数组")
+    require(isinstance(evidence, list), "Evidence must be an array")
     identities = {board: set() for board in BOARDS}
     for record in evidence:
         keys(record, ("board", "run_id", "run_attempt", "tested_sha", "run_url"))
-        require(record["board"] in BOARDS, "未知证据板型")
+        require(record["board"] in BOARDS, "Unknown evidence board")
         decimal(record["run_id"])
         decimal(record["run_attempt"])
         sha(record["tested_sha"])
         require(
             isinstance(record["run_url"], str)
             and record["run_url"].startswith("https://"),
-            "缺少证据 URL",
+            "Missing evidence URL",
         )
         identity = (record["run_id"], record["run_attempt"])
-        require(identity not in identities[record["board"]], "重复资格证据")
+        require(
+            identity not in identities[record["board"]],
+            "Duplicate qualification evidence",
+        )
         identities[record["board"]].add(identity)
     if environment["qualified"]:
         require(
             build is not None and environment["runtime_image"] is not None,
-            "批准环境缺少镜像/构建",
+            "Qualified environment is missing its image or build",
         )
-        require(environment["profiles"].keys() == BOARDS.keys(), "批准环境缺少双板型")
+        require(
+            environment["profiles"].keys() == BOARDS.keys(),
+            "Qualified environment must include both boards",
+        )
         require(
             all(len(runs) >= 3 for runs in identities.values()),
-            "每板型至少三次独立证据",
+            "Each board requires at least three independent evidence records",
         )
     return environment["qualified"]
 
@@ -445,10 +575,11 @@ def validate_fingerprint(build):
     for name in ("sdk_sha256", "torch_sha256"):
         require(
             isinstance(build[name], str) and re.fullmatch(r"[0-9a-f]{64}", build[name]),
-            "构建 hash 不完整",
+            "Incomplete build hash",
         )
     require(
-        build["pytorch_sail_arch"] == ["ppu_10", "ppu_15"], "架构必须包含两个目标并排序"
+        build["pytorch_sail_arch"] == ["ppu_10", "ppu_15"],
+        "Build architectures must include both targets in sorted order",
     )
     digest_image(build["build_image"])
     sha(build["vllm_commit"])
@@ -464,14 +595,14 @@ def validate_runtime_profile(profile):
         isinstance(cap, list)
         and len(cap) == 2
         and all(type(n) is int and n >= 0 for n in cap),
-        "非法 capability",
+        "Invalid capability",
     )
     for name in ("sdk_identity", "driver_identity"):
         require(
             isinstance(profile[name], str)
             and profile[name].strip()
             and profile[name].lower() != "unknown",
-            "运行时身份缺失",
+            "Missing runtime identity",
         )
     keys(profile["packages"], ("torch", "triton", "pla"))
     require(
@@ -479,9 +610,11 @@ def validate_runtime_profile(profile):
             isinstance(v, str) and v.strip() and v.lower() != "unknown"
             for v in profile["packages"].values()
         ),
-        "版本缺失",
+        "Missing version",
     )
-    require(profile["runtime_env"] == {"VLLM_SAIL_USE_PLA": True}, "PLA 必须启用")
+    require(
+        profile["runtime_env"] == {"VLLM_SAIL_USE_PLA": True}, "PLA must be enabled"
+    )
 
 
 def checksum(data):
@@ -501,8 +634,8 @@ def read_diagnostics(path):
     result = {}
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
-        require(separator and key, "非法构建诊断")
-        require(key == "status" or key not in result, "重复构建字段")
+        require(separator and key, "Invalid build diagnostics")
+        require(key == "status" or key not in result, "Duplicate build field")
         result[key] = value
     return result
 
@@ -513,17 +646,22 @@ def build_fingerprint(
     sha(tested_sha)
     sha(expected_vllm_commit)
     digest_image(build_image)
-    require(diagnostics.get("status") == "succeeded", "构建未成功")
+    require(diagnostics.get("status") == "succeeded", "Build did not succeed")
     for field, package, expected in (
         ("vllm_commit", "vllm", expected_vllm_commit),
         ("vllm_sail_commit", "vllm-sail", tested_sha),
     ):
-        require(diagnostics.get(field) == expected, f"构建诊断身份不符: {field}")
+        require(
+            diagnostics.get(field) == expected,
+            f"Build diagnostics identity mismatch: {field}",
+        )
         require(
             wheel_manifest.get("commits", {}).get(package) == expected,
-            f"wheel 身份不符: {package}",
+            f"Wheel identity mismatch: {package}",
         )
-    require(diagnostics.get("build_image") == build_image, "实际构建镜像不符")
+    require(
+        diagnostics.get("build_image") == build_image, "Observed build image mismatch"
+    )
     result = {"build_image": build_image, "vllm_commit": expected_vllm_commit}
     for key in ("sdk_sha256", "torch_sha256"):
         value = diagnostics.get(key, "")
@@ -541,13 +679,13 @@ def validate_changes(changes):
         ("schema", "base_sha", "head_sha", "tested_sha", "complete", "paths", "reason"),
     )
     require(
-        type(changes["schema"]) is int and changes["schema"] == 1, "diff schema 错误"
+        type(changes["schema"]) is int and changes["schema"] == 1, "Invalid diff schema"
     )
     sha(changes["tested_sha"])
     for name in ("base_sha", "head_sha"):
         if changes[name] is not None:
             sha(changes[name])
-    require(type(changes["complete"]) is bool, "diff 完整性非法")
+    require(type(changes["complete"]) is bool, "Invalid diff completeness flag")
     for path in strings(changes["paths"]):
         safe_path(path)
     if changes["complete"]:
@@ -555,12 +693,12 @@ def validate_changes(changes):
             changes["base_sha"] is not None
             and changes["head_sha"] is not None
             and changes["reason"] is None,
-            "完整 diff 缺少身份",
+            "Complete diff is missing revision identities",
         )
     else:
         require(
             changes["reason"] in ("no_pr_context", "incomplete_diff"),
-            "缺少 diff 失败原因",
+            "Missing diff failure reason",
         )
 
 
@@ -576,8 +714,10 @@ def make_selection(
     runtime_image,
     expected_vllm_commit,
     force_full,
+    repo=ROOT,
 ):
     config, environment = json.loads(config_bytes), json.loads(environment_bytes)
+    discover_catalog(config, repo)
     qualified = validate_environment(environment)
     validate_changes(changes)
     decimal(build_run_id)
@@ -630,6 +770,7 @@ def validate_selection(
     build_image,
     runtime_image,
     expected_vllm_commit,
+    repo=ROOT,
 ):
     keys(
         selection,
@@ -656,17 +797,24 @@ def validate_selection(
     )
     require(
         type(selection["schema"]) is int and selection["schema"] == 1,
-        "选择 schema 错误",
+        "Invalid selection schema",
     )
-    require(selection["tested_sha"] == sha(tested_sha), "tested SHA 不符")
-    require(selection["build_run_id"] == decimal(build_run_id), "build run 不符")
-    require(selection["runtime_image"] == digest_image(runtime_image), "运行镜像不符")
-    require(selection["config_sha256"] == checksum(config_bytes), "配置 checksum 不符")
+    require(selection["tested_sha"] == sha(tested_sha), "Tested SHA mismatch")
+    require(selection["build_run_id"] == decimal(build_run_id), "Build run mismatch")
+    require(
+        selection["runtime_image"] == digest_image(runtime_image),
+        "Runtime image mismatch",
+    )
+    require(
+        selection["config_sha256"] == checksum(config_bytes),
+        "Configuration checksum mismatch",
+    )
     require(
         selection["environment_sha256"] == checksum(environment_bytes),
-        "环境 checksum 不符",
+        "Environment checksum mismatch",
     )
     config = json.loads(config_bytes)
+    discover_catalog(config, repo)
     environment = json.loads(environment_bytes)
     qualified = validate_environment(environment)
     for name in ("base_sha", "head_sha"):
@@ -680,7 +828,9 @@ def validate_selection(
         "changed_files",
         "unmapped_files",
     ):
-        require(strings(selection[name]) == sorted(selection[name]), f"未排序: {name}")
+        require(
+            strings(selection[name]) == sorted(selection[name]), f"Not sorted: {name}"
+        )
     for path in (
         selection["files"] + selection["changed_files"] + selection["unmapped_files"]
     ):
@@ -689,19 +839,25 @@ def validate_selection(
     require(
         selection["groups"] == routes["groups"]
         and selection["matrix"] == routes["matrix"],
-        "组/矩阵不符",
+        "Group or matrix mismatch",
     )
     expected_files = sorted(
         t["test"] for t in config["test_catalog"] if t["id"] in selection["test_ids"]
     )
-    require(selection["files"] == expected_files, "ID/文件不符")
+    require(selection["files"] == expected_files, "Test ID or file mismatch")
     mode = selection["mode"]
-    require(mode in ("none", "subset", "full"), "未知选择模式")
-    require(bool(selection["test_ids"]) == (mode != "none"), "空/非空模式不符")
+    require(mode in ("none", "subset", "full"), "Unknown selection mode")
+    require(
+        mode == "full" or bool(selection["test_ids"]) == (mode != "none"),
+        "Selection emptiness does not match its mode",
+    )
     if mode == "full":
         require(
-            selection["test_ids"] == sorted(t["id"] for t in config["test_catalog"]),
-            "全量清单不完整",
+            selection["test_ids"]
+            == sorted(
+                t["id"] for t in config["test_catalog"] if runnable_boards(config, t)
+            ),
+            "Incomplete full selection",
         )
     fingerprint = selection["build_fingerprint"]
     keys(
@@ -714,20 +870,22 @@ def validate_selection(
             "vllm_commit",
         ),
     )
-    require(fingerprint["build_image"] == digest_image(build_image), "构建镜像不符")
     require(
-        fingerprint["vllm_commit"] == sha(expected_vllm_commit), "upstream SHA 不符"
+        fingerprint["build_image"] == digest_image(build_image), "Build image mismatch"
+    )
+    require(
+        fingerprint["vllm_commit"] == sha(expected_vllm_commit), "Upstream SHA mismatch"
     )
     if mode != "full":
         require(
             qualified
             and fingerprint == environment["build"]
             and runtime_image == environment["runtime_image"],
-            "非全量清单的环境未经批准",
+            "Non-full selection requires a qualified environment",
         )
         require(
             selection["base_sha"] is not None and selection["head_sha"] is not None,
-            "非全量清单缺少 PR 身份",
+            "Non-full selection is missing PR revision identities",
         )
         expected = select_tests(
             config,
@@ -738,7 +896,7 @@ def validate_selection(
         )
         require(
             all(selection[key] == value for key, value in expected.items()),
-            "非全量清单与源码规则不一致",
+            "Non-full selection does not match source rules",
         )
     return routes
 
@@ -761,7 +919,10 @@ def github_outputs(values):
                     if isinstance(value, str)
                     else json.dumps(value, separators=(",", ":"))
                 )
-                require("\n" not in text and "\r" not in text, "多行 output 不合法")
+                require(
+                    "\n" not in text and "\r" not in text,
+                    "Multiline output is not allowed",
+                )
                 stream.write(f"{key}={text}\n")
 
 
@@ -809,7 +970,7 @@ def main():
         changes = json.loads(args.changes.read_bytes())
         require(
             args.wheel_manifest.name == "wheel-manifest.json",
-            "wheel manifest 文件名不符",
+            "Wheel manifest filename mismatch",
         )
         manifest = load_sibling("ppu_wheel_manifest").verify(
             args.wheel_manifest.parent,
@@ -827,6 +988,7 @@ def main():
             runtime_image=args.runtime_image,
             expected_vllm_commit=args.expected_vllm_commit,
             force_full=args.scope == "full",
+            repo=args.repo,
         )
     write_json(args.output, result)
     if args.command == "select":
