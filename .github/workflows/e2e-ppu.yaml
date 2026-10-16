@@ -198,4 +198,8 @@ jobs:
             host_ipc: true
             host_network: true
             shm_size: 32Gi
-          command: cd /workspace/source && bash scripts/ci/ppu_e2e_smoke.sh
+          # Privileged pods see every card; bind the assigned ones before Python starts.
+          command: >-
+            cd /workspace/source &&
+            export CUDA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:?Assigned devices are unavailable}" &&
+            bash scripts/ci/ppu_e2e_smoke.sh

@@ -142,7 +142,11 @@ jobs:
             host_ipc: true
             host_network: true
             shm_size: 8Gi
-          command: cd /workspace/source && bash scripts/ci/ppu_pin_ut.sh
+          # Privileged pods see every card; bind the assigned ones before Python starts.
+          command: >-
+            cd /workspace/source &&
+            export CUDA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:?Assigned devices are unavailable}" &&
+            bash scripts/ci/ppu_pin_ut.sh
 
       - name: Upload pin UT diagnostics
         if: always()

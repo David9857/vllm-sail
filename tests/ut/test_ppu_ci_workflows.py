@@ -75,11 +75,44 @@ def test_notify_only_receives_label_events_with_minimum_permissions():
     assert config[True] == {"pull_request_target": {"types": ["labeled"]}}
     job = config["jobs"]["notify"]
     assert "ready-run-all-tests" in job["if"]
-    assert job["permissions"] == {
-        "contents": "read",
-        "issues": "write",
-        "pull-requests": "read",
-    }
+
+
+# GITHUB_TOKEN needs pull-requests: write to comment or react on a PR;
+# issues: write alone returns 403 "Resource not accessible by integration".
+@pytest.mark.parametrize(
+    "name,job_id,expected",
+    [
+        (
+            "run-ci-command.yml",
+            "command",
+            {
+                "contents": "read",
+                "actions": "write",
+                "issues": "write",
+                "pull-requests": "write",
+                "statuses": "write",
+            },
+        ),
+        (
+            "notify-ci-authorized.yml",
+            "notify",
+            {"contents": "read", "issues": "write", "pull-requests": "write"},
+        ),
+        (
+            "ppu-pr-ci.yaml",
+            "report",
+            {
+                "contents": "read",
+                "actions": "read",
+                "statuses": "write",
+                "issues": "write",
+                "pull-requests": "write",
+            },
+        ),
+    ],
+)
+def test_pr_commenting_jobs_can_write_pull_request_comments(name, job_id, expected):
+    assert workflow(name)["jobs"][job_id]["permissions"] == expected
 
 
 def test_executor_uses_only_dispatch_with_a_stable_request_identity():
@@ -343,3 +376,51 @@ def test_ops_partial_retry_downloads_diagnostics_from_successful_previous_attemp
             .replace("${{ github.run_attempt }}", "2")
         )
         assert downloaded == uploaded
+
+
+def scheduler_command(name):
+    for job in workflow(name)["jobs"].values():
+        for step in job.get("steps", []):
+            if "ppu-scheduler-action" in step.get("uses", ""):
+                return step["with"]["command"]
+    raise AssertionError(f"No scheduler step in {name}")
+
+
+# Privileged worker pods see every card on the host; without this binding the
+# runtime defaults to cards 0..N-1, which may belong to other jobs.
+@pytest.mark.parametrize(
+    "name,script",
+    [
+        ("e2e-ppu.yaml", "ppu_e2e_smoke.sh"),
+        ("ppu-pin-ut.yaml", "ppu_pin_ut.sh"),
+    ],
+)
+@pytest.mark.parametrize("allocated", ["3", "6,7", None])
+def test_device_workers_bind_allocated_cards_before_running(
+    tmp_path, name, script, allocated
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "bash"
+    fake.write_text(
+        '#!/bin/sh\nprintf "%s %s\\n" "${CUDA_VISIBLE_DEVICES-<unset>}" "$*"\n'
+    )
+    fake.chmod(0o755)
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.defpath}", "CUDA_VISIBLE_DEVICES": "0,1"}
+    if allocated is not None:
+        env["NVIDIA_VISIBLE_DEVICES"] = allocated
+    command = scheduler_command(name).replace("/workspace/source", str(ROOT))
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", command],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if allocated is None:
+        assert result.returncode != 0
+        assert "NVIDIA_VISIBLE_DEVICES" in result.stderr
+        assert result.stdout == ""
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"{allocated} scripts/ci/{script}\n"

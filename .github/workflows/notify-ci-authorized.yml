@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write
     concurrency:
       group: ppu-ci-notify-${{ github.event.pull_request.number }}
       cancel-in-progress: false

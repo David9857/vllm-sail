@@ -18,7 +18,7 @@ jobs:
       contents: read
       actions: write
       issues: write
-      pull-requests: read
+      pull-requests: write
       statuses: write
     concurrency:
       group: ppu-ci-command-${{ github.event.issue.number }}
