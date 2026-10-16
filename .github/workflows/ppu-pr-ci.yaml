@@ -1,0 +1,86 @@
+name: PPU PR CI
+run-name: "PPU PR #${{ inputs.pr_number }} @ ${{ inputs.head_sha }} by ${{ inputs.requester }} (comment ${{ inputs.comment_id }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      requester:
+        required: true
+        type: string
+      comment_id:
+        required: true
+        type: string
+
+permissions: {}
+cache-mode: none
+
+concurrency:
+  group: ppu-pr-ci-${{ inputs.pr_number }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  validate:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate PPU CI request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_TRUSTED_USERS: ${{ vars.CI_TRUSTED_USERS }}
+        run: python -m scripts.ci.ppu_ci_command validate
+
+  ppu:
+    needs: validate
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/build-ppu-wheels.yaml
+    with:
+      pr_mode: true
+      pr_head_sha: ${{ inputs.head_sha }}
+
+  report:
+    needs: [validate, ppu]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          python-version: "3.12"
+      - name: Report PPU CI result
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: python -m scripts.ci.ppu_ci_command report

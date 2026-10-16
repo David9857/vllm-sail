@@ -161,8 +161,18 @@ def test_e2e_workflow_only_exposes_model_smoke() -> None:
     workflow = yaml.safe_load(text)
     trigger = workflow.get("on", workflow.get(True))
     assert set(trigger) == {"workflow_call", "workflow_dispatch"}
-    for event in trigger.values():
-        assert set(event["inputs"]) == {"build_run_id", "models", "image"}
+    assert set(trigger["workflow_dispatch"]["inputs"]) == {
+        "build_run_id",
+        "models",
+        "image",
+    }
+    assert set(trigger["workflow_call"]["inputs"]) == {
+        "build_run_id",
+        "models",
+        "image",
+        "pr_mode",
+        "pr_head_sha",
+    }
     assert set(workflow["jobs"]) == {"prepare", "e2e"}
     assert "if" not in workflow["jobs"]["prepare"]
     assert workflow["jobs"]["e2e"]["needs"] == "prepare"

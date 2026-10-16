@@ -1,0 +1,36 @@
+name: Notify PPU CI authorization
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: >-
+      github.event.label.name == 'ready' ||
+      github.event.label.name == 'ready-run-all-tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    concurrency:
+      group: ppu-ci-notify-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Explain PPU CI commands
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_TRUSTED_USERS: ${{ vars.CI_TRUSTED_USERS }}
+        run: python -m scripts.ci.ppu_ci_command notify

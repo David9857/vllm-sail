@@ -104,6 +104,7 @@ def test_build_workflow_uses_script_and_retains_artifacts() -> None:
             "ppu-build-diagnostics-${{ github.run_id }}",
         }
         assert all(config["retention-days"] == 14 for config in uploads.values())
+        assert all(config["overwrite"] is True for config in uploads.values())
         assert (
             uploads["ppu-wheels-${{ github.run_id }}"]["if-no-files-found"] == "error"
         )

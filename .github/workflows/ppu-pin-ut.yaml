@@ -3,6 +3,12 @@ name: PPU pin unit tests
 on:
   workflow_call:
     inputs:
+      pr_mode:
+        type: boolean
+        default: false
+      pr_head_sha:
+        type: string
+        default: ""
       build_run_id:
         description: PPU CI build run supplying ppu-wheels-<run_id>
         required: true
@@ -15,6 +21,7 @@ on:
 permissions:
   contents: read
   actions: read
+cache-mode: none
 
 jobs:
   pin-unit-tests:
@@ -51,10 +58,23 @@ jobs:
           echo "=== insteadOf after (global) ==="
           git config --global --get-regexp '^url\..*\.insteadof$' 2>/dev/null || echo none
 
+      - name: Require disabled cache access
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (process.env.ACTIONS_CACHE_MODE !== 'none') {
+              core.setFailed('PPU CI requires cache-mode: none');
+            }
       - name: Check out vLLM SAIL
         uses: actions/checkout@v4
         with:
           github-server-url: https://github.com
+          ref: ${{ inputs.pr_head_sha || github.sha }}
+          persist-credentials: false
+      - name: Verify checked-out revision
+        env:
+          EXPECTED_SHA: ${{ inputs.pr_head_sha || github.sha }}
+        run: test "$(git -c safe.directory="$PWD" rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Download CI-built wheels
         uses: actions/download-artifact@v4
@@ -68,7 +88,8 @@ jobs:
       - name: Verify wheel manifest and pin
         id: manifest
         env:
-          REQUIRE_PR_ARTIFACT: ${{ github.event_name == 'pull_request' }}
+          REQUIRE_PR_ARTIFACT: ${{ inputs.pr_mode || github.event_name == 'pull_request' }}
+          EXPECTED_SHA: ${{ inputs.pr_head_sha || github.sha }}
         run: |
           python scripts/ci/ppu_wheel_manifest.py verify "${WHEELS_DIR}"
           python - <<'PYTHON'
@@ -88,7 +109,7 @@ jobs:
               # PR gating must fail closed; a manual reuse may skip a different pin.
               subprocess.run(
                   ["python", "scripts/ci/ppu_wheel_manifest.py", "verify", os.environ["WHEELS_DIR"],
-                   "--vllm-commit", expected, "--sail-commit", os.environ["GITHUB_SHA"]],
+                   "--vllm-commit", expected, "--sail-commit", os.environ["EXPECTED_SHA"]],
                   check=True,
               )
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
@@ -127,7 +148,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ppu-pin-main-verified-${{ github.run_id }}
+          name: ppu-pin-main-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/pin-ut-main-verified/*.log
             /wl_nas/devops/${{ github.run_id }}-${{ github.run_attempt }}/pin-ut-main-verified/pin-ut.xml

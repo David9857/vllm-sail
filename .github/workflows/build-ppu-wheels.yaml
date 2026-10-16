@@ -2,6 +2,14 @@ name: PPU CI
 
 on:
   pull_request:
+  workflow_call:
+    inputs:
+      pr_mode:
+        type: boolean
+        default: false
+      pr_head_sha:
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       existing_build_run_id:
@@ -38,14 +46,15 @@ on:
 permissions:
   contents: read
   actions: read
+cache-mode: none
 
 concurrency:
-  group: ppu-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ppu-ci-${{ inputs.pr_mode && 'on-demand' || github.event_name }}-${{ inputs.pr_mode && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !inputs.pr_mode }}
 
 jobs:
   build:
-    if: inputs.existing_build_run_id == '' && github.event_name != 'workflow_dispatch'
+    if: inputs.existing_build_run_id == '' && (inputs.pr_mode || github.event_name != 'workflow_dispatch')
     name: PPU wheel build
     runs-on: k8s-runner-group-cpu-thead
     timeout-minutes: 180
@@ -79,10 +88,23 @@ jobs:
           echo "=== insteadOf after (global) ==="
           git config --global --get-regexp '^url\..*\.insteadof$' 2>/dev/null || echo none
 
+      - name: Require disabled cache access
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (process.env.ACTIONS_CACHE_MODE !== 'none') {
+              core.setFailed('PPU CI requires cache-mode: none');
+            }
       - name: Check out vLLM SAIL
         uses: actions/checkout@v4
         with:
           github-server-url: https://github.com
+          ref: ${{ inputs.pr_head_sha || github.sha }}
+          persist-credentials: false
+      - name: Verify checked-out revision
+        env:
+          EXPECTED_SHA: ${{ inputs.pr_head_sha || github.sha }}
+        run: test "$(git -c safe.directory="$PWD" rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Record build image for downstream tests
         id: image
@@ -99,12 +121,14 @@ jobs:
           path: artifacts/wheels/
           if-no-files-found: error
           retention-days: 14
+          overwrite: true
 
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ppu-build-diagnostics-${{ github.run_id }}
+          overwrite: true
           path: |
             artifacts/logs/**
             artifacts/build-manifest.txt
@@ -113,7 +137,7 @@ jobs:
 
   # This pipeline remains manual until both board types are qualified.
   detect-ops-changes:
-    if: github.event_name == 'workflow_dispatch' && inputs.existing_build_run_id == ''
+    if: ${{ !inputs.pr_mode && github.event_name == 'workflow_dispatch' && inputs.existing_build_run_id == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -190,10 +214,12 @@ jobs:
           path: artifacts/wheels/
           if-no-files-found: error
           retention-days: 14
+          overwrite: true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ppu-build-diagnostics-${{ github.run_id }}
+          overwrite: true
           path: |
             artifacts/logs/**
             artifacts/build-manifest.txt
@@ -270,6 +296,8 @@ jobs:
       actions: read
     uses: ./.github/workflows/ppu-pin-ut.yaml
     with:
+      pr_mode: ${{ inputs.pr_mode || false }}
+      pr_head_sha: ${{ inputs.pr_head_sha }}
       build_run_id: ${{ inputs.existing_build_run_id || github.run_id }}
       image: ${{ needs.build.outputs.image || inputs.build_image || 'reg.docker.alibaba-inc.com/ai-tmp/llm@sha256:24872709b1a84ec0e91260eeeccf6ae7ba52a6c70fb90f55a7aae1c1df503bcb' }}
 
@@ -278,16 +306,18 @@ jobs:
     needs: build
     # PR smoke and pin UT consume this run's wheels in separate fresh pods.
     # Manual artifact reuse remains available for pin-UT debugging only.
-    if: github.event_name == 'pull_request'
+    if: inputs.pr_mode || github.event_name == 'pull_request'
     uses: ./.github/workflows/e2e-ppu.yaml
     with:
+      pr_mode: ${{ inputs.pr_mode || false }}
+      pr_head_sha: ${{ inputs.pr_head_sha }}
       build_run_id: ${{ github.run_id }}
       image: ${{ needs.build.outputs.image }}
 
   gate:
     name: PPU CI gate
     needs: [build, pin-unit-tests, smoke]
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    if: ${{ always() && (inputs.pr_mode || github.event_name == 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
