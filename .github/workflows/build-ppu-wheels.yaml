@@ -1,7 +1,6 @@
 name: PPU CI
 
 on:
-  pull_request:
   workflow_call:
     inputs:
       pr_mode:

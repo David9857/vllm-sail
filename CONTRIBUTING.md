@@ -109,9 +109,15 @@ code runs with read-only permissions, no inherited secrets, disabled cache
 access and an explicitly verified checkout SHA. Authorization and reporting
 run separately on GitHub-hosted runners using default-branch code.
 
-CPU checks still run automatically. During rollout, the existing automatic PPU
-PR checks also remain enabled; removing that trigger and changing the required
-check to the `PPU CI` status are separate administrator-coordinated changes.
+CPU checks still run automatically. PPU CI for PRs is requested through the
+commands above; opening a PR or pushing a commit does not start it automatically.
+Manual operator tests and existing-build pin tests remain available through
+GitHub Actions workflow dispatch.
+
+Repository administrators must require the `PPU CI` commit status from GitHub
+Actions instead of the individual PPU build, pin UT, smoke and gate job checks.
+Keep the CPU and vLLM source checks required. Coordinate this ruleset change with
+the switch to on-demand PPU CI, after verifying the commands on the default branch.
 
 ## Reporting issues
 

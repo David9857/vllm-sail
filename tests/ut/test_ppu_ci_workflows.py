@@ -255,9 +255,9 @@ def test_sha_verification_allows_different_owner_but_rejects_wrong_sha(
         assert not result.stderr
 
 
-def test_build_conditions_preserve_automatic_and_manual_routes():
+def test_build_conditions_preserve_on_demand_and_manual_routes():
     config = workflow("build-ppu-wheels.yaml")
-    assert set(config[True]) == {"pull_request", "workflow_dispatch", "workflow_call"}
+    assert set(config[True]) == {"workflow_dispatch", "workflow_call"}
     assert set(config[True]["workflow_call"]["inputs"]) == {"pr_mode", "pr_head_sha"}
     assert set(config[True]["workflow_dispatch"]["inputs"]) == {
         "existing_build_run_id",
