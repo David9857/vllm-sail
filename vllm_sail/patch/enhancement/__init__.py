@@ -13,6 +13,7 @@ reroute that the attention `forward_ppu` additions rely on).
 """
 
 from vllm_sail.patch.enhancement import platform_predicates  # noqa: F401  (must be first)
+from vllm_sail.patch.enhancement import pynccl  # noqa: F401  (before communicators)
 from vllm_sail.patch.enhancement import import_gates  # noqa: F401  (before kernel consumers)
 from vllm_sail.patch.enhancement import custom_op_dispatch  # noqa: F401
 from vllm_sail.patch.enhancement import attention  # noqa: F401  (needs custom_op_dispatch)
