@@ -14,6 +14,10 @@ on:
       pr_head_sha:
         type: string
         default: ""
+      wheel_source_sha:
+        description: Validated SAIL source of the reused wheels
+        type: string
+        default: ""
       build_run_id:
         description: Run supplying the ppu-wheels artifact
         required: true
@@ -50,7 +54,7 @@ permissions:
 cache-mode: none
 
 concurrency:
-  group: e2e-ppu-${{ github.ref }}-${{ inputs.build_run_id }}
+  group: e2e-ppu-${{ github.ref }}-${{ inputs.pr_mode && github.run_id || inputs.build_run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -164,16 +168,16 @@ jobs:
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}
 
-      - name: Require the current PR artifact and verified upstream pin
+      - name: Require the expected wheel source and verified upstream pin
         if: inputs.pr_mode || github.event_name == 'pull_request'
         shell: bash
         env:
-          EXPECTED_SHA: ${{ inputs.pr_head_sha || github.sha }}
+          WHEEL_SOURCE_SHA: ${{ inputs.wheel_source_sha || inputs.pr_head_sha || github.sha }}
         run: |
           pin="$(tr -d '[:space:]' < .github/vllm-main-verified.commit)"
           [[ "${pin}" =~ ^[0-9a-f]{40}$ ]]
           python scripts/ci/ppu_wheel_manifest.py verify wheels \
-            --vllm-commit "${pin}" --sail-commit "${EXPECTED_SHA}"
+            --vllm-commit "${pin}" --sail-commit "${WHEEL_SOURCE_SHA}"
 
       - name: Run PPU E2E smoke
         uses: t-head/ppu-scheduler-action@main

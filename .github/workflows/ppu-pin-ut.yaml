@@ -9,6 +9,10 @@ on:
       pr_head_sha:
         type: string
         default: ""
+      wheel_source_sha:
+        description: Validated SAIL source of the reused wheels
+        type: string
+        default: ""
       build_run_id:
         description: PPU CI build run supplying ppu-wheels-<run_id>
         required: true
@@ -89,7 +93,7 @@ jobs:
         id: manifest
         env:
           REQUIRE_PR_ARTIFACT: ${{ inputs.pr_mode || github.event_name == 'pull_request' }}
-          EXPECTED_SHA: ${{ inputs.pr_head_sha || github.sha }}
+          WHEEL_SOURCE_SHA: ${{ inputs.wheel_source_sha || inputs.pr_head_sha || github.sha }}
         run: |
           python scripts/ci/ppu_wheel_manifest.py verify "${WHEELS_DIR}"
           python - <<'PYTHON'
@@ -107,11 +111,9 @@ jobs:
           matches = actual == expected
           if os.environ["REQUIRE_PR_ARTIFACT"] == "true":
               # PR gating must fail closed; a manual reuse may skip a different pin.
-              subprocess.run(
-                  ["python", "scripts/ci/ppu_wheel_manifest.py", "verify", os.environ["WHEELS_DIR"],
-                   "--vllm-commit", expected, "--sail-commit", os.environ["EXPECTED_SHA"]],
-                  check=True,
-              )
+              cmd = ["python", "scripts/ci/ppu_wheel_manifest.py", "verify", os.environ["WHEELS_DIR"],
+                     "--vllm-commit", expected, "--sail-commit", os.environ["WHEEL_SOURCE_SHA"]]
+              subprocess.run(cmd, check=True)
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"matches={str(matches).lower()}\n")
           summary = f"main-verified: build={actual}, pin={expected}"

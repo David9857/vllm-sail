@@ -9,6 +9,14 @@ on:
       pr_head_sha:
         type: string
         default: ""
+      existing_build_run_id:
+        description: Skip build and reuse wheels from this run
+        type: string
+        default: ""
+      wheel_source_sha:
+        description: Validated SAIL source of the reused wheels
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       existing_build_run_id:
@@ -289,7 +297,11 @@ jobs:
   pin-unit-tests:
     name: PPU pin UT
     needs: build
-    if: ${{ !cancelled() && (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.existing_build_run_id != '')) }}
+    if: >-
+      ${{ !cancelled() && (needs.build.result == 'success' ||
+      (needs.build.result == 'skipped' && inputs.existing_build_run_id != '' &&
+      ((inputs.pr_mode && inputs.wheel_source_sha != '') ||
+      (!inputs.pr_mode && github.event_name == 'workflow_dispatch')))) }}
     permissions:
       contents: read
       actions: read
@@ -298,20 +310,24 @@ jobs:
       pr_mode: ${{ inputs.pr_mode || false }}
       pr_head_sha: ${{ inputs.pr_head_sha }}
       build_run_id: ${{ inputs.existing_build_run_id || github.run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}
       image: ${{ needs.build.outputs.image || inputs.build_image || 'reg.docker.alibaba-inc.com/ai-tmp/llm@sha256:24872709b1a84ec0e91260eeeccf6ae7ba52a6c70fb90f55a7aae1c1df503bcb' }}
 
   smoke:
     name: PPU E2E smoke
     needs: build
-    # PR smoke and pin UT consume this run's wheels in separate fresh pods.
-    # Manual artifact reuse remains available for pin-UT debugging only.
-    if: inputs.pr_mode || github.event_name == 'pull_request'
+    if: >-
+      ${{ !cancelled() && (needs.build.result == 'success' ||
+      (needs.build.result == 'skipped' && inputs.pr_mode &&
+      inputs.existing_build_run_id != '' && inputs.wheel_source_sha != '')) &&
+      (inputs.pr_mode || github.event_name == 'pull_request') }}
     uses: ./.github/workflows/e2e-ppu.yaml
     with:
       pr_mode: ${{ inputs.pr_mode || false }}
       pr_head_sha: ${{ inputs.pr_head_sha }}
-      build_run_id: ${{ github.run_id }}
-      image: ${{ needs.build.outputs.image }}
+      build_run_id: ${{ inputs.existing_build_run_id || github.run_id }}
+      wheel_source_sha: ${{ inputs.wheel_source_sha }}
+      image: ${{ needs.build.outputs.image || inputs.build_image || 'reg.docker.alibaba-inc.com/ai-tmp/llm@sha256:24872709b1a84ec0e91260eeeccf6ae7ba52a6c70fb90f55a7aae1c1df503bcb' }}
 
   gate:
     name: PPU CI gate
@@ -323,6 +339,9 @@ jobs:
       - name: Require every PPU stage to succeed
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
+          PR_MODE: ${{ inputs.pr_mode || false }}
+          EXISTING_BUILD_RUN_ID: ${{ inputs.existing_build_run_id }}
+          WHEEL_SOURCE_SHA: ${{ inputs.wheel_source_sha }}
         run: |
           python - <<'PYTHON'
           import json
@@ -331,7 +350,16 @@ jobs:
           results = json.loads(os.environ["JOB_RESULTS"])
           for job, result in results.items():
               print(f"{job}: {result['result']}")
-          failed = [job for job, result in results.items() if result["result"] != "success"]
-          if failed:
-              raise SystemExit(f"Required PPU stages did not succeed: {', '.join(failed)}")
+          build = results.get("build", {}).get("result")
+          reuse = (
+              os.environ["PR_MODE"] == "true"
+              and os.environ["EXISTING_BUILD_RUN_ID"]
+              and os.environ["WHEEL_SOURCE_SHA"]
+          )
+          if build != "success" and not (build == "skipped" and reuse):
+              raise SystemExit(f"build did not succeed or use validated wheels: {build}")
+          for job in ("pin-unit-tests", "smoke"):
+              result = results.get(job, {}).get("result")
+              if result != "success":
+                  raise SystemExit(f"{job} did not succeed: {result}")
           PYTHON

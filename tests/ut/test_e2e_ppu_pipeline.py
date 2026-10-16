@@ -172,6 +172,7 @@ def test_e2e_workflow_only_exposes_model_smoke() -> None:
         "image",
         "pr_mode",
         "pr_head_sha",
+        "wheel_source_sha",
     }
     assert set(workflow["jobs"]) == {"prepare", "e2e"}
     assert "if" not in workflow["jobs"]["prepare"]

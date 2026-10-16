@@ -32,8 +32,12 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
       pull-requests: read
       statuses: write
+    outputs:
+      existing_build_run_id: ${{ steps.validate.outputs.existing_build_run_id }}
+      wheel_source_sha: ${{ steps.validate.outputs.wheel_source_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,6 +47,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Validate PPU CI request
+        id: validate
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CI_TRUSTED_USERS: ${{ vars.CI_TRUSTED_USERS }}
@@ -57,6 +62,8 @@ jobs:
     with:
       pr_mode: true
       pr_head_sha: ${{ inputs.head_sha }}
+      existing_build_run_id: ${{ needs.validate.outputs.existing_build_run_id }}
+      wheel_source_sha: ${{ needs.validate.outputs.wheel_source_sha }}
 
   report:
     needs: [validate, ppu]
