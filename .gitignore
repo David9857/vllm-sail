@@ -52,3 +52,6 @@ compile_commands.json
 /benchmarks/kernels/fusedmoe_tuning_tools/*.json
 /benchmarks/kernels/fusedmoe_tuning_tools/*.csv
 /benchmarks/kernels/fusedmoe_tuning_tools/*.asysrep
+
+# local real-machine test logs
+*.log

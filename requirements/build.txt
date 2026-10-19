@@ -2,6 +2,7 @@ cmake>=3.26.1
 ninja
 packaging>=24.2
 setuptools>=77.0.3,<81.0.0
+setuptools-rust>=1.9.0
 setuptools-scm>=8
 wheel
 # setup.py reads csrc/upstream/manifest.toml; tomllib is stdlib from 3.11.

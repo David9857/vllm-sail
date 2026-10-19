@@ -1,4 +1,5 @@
 minimum_pre_commit_version: "3.2.0"
+default_install_hook_types: [pre-commit, commit-msg]
 # Match vLLM's local / CI hook stages. Keep tool versions pinned here.
 default_stages: [pre-commit, manual]
 # Copied patch bodies and generated files must retain their source structure.
@@ -35,3 +36,33 @@ repos:
     hooks:
       - id: shellcheck
         args: [--shell=bash, --format=gcc]
+
+  # Local policy guard; assemble prohibited tokens only at runtime.
+  - repo: local
+    hooks:
+      - id: no-prohibited-tokens
+        name: Block prohibited tokens in staged code
+        language: system
+        entry: >-
+          bash -c 'token_a=$(printf "\102\124\126");
+          token_b=$(printf "\146\154\171\164\151\147\145\162");
+          pattern="${token_a}|${token_b}";
+          if git diff --cached --unified=0 --diff-filter=ACMR -- |
+          grep -E "^\+([^+]|$)" | grep -m5 -inE "${pattern}"; then
+          printf "\nERROR: Found prohibited tokens in staged changes.\n";
+          exit 1; fi' _
+        stages: [pre-commit]
+        always_run: true
+        pass_filenames: false
+      - id: no-prohibited-tokens-msg
+        name: Block prohibited tokens in commit message
+        language: system
+        entry: >-
+          bash -c 'token_a=$(printf "\102\124\126");
+          token_b=$(printf "\146\154\171\164\151\147\145\162");
+          pattern="${token_a}|${token_b}";
+          if grep -iE "${pattern}" "$1"; then
+          printf "\nERROR: Found prohibited tokens in commit message.\n";
+          exit 1; fi' _
+        stages: [commit-msg]
+        always_run: true
