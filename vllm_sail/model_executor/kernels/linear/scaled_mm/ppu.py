@@ -393,7 +393,7 @@ class PPUDeepGemmFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
                 "Requires tensor/token activation scales and tensor/channel weight scales"
             )
         if not should_use_deepgemm_for_fp8_linear(
-            config.out_dtype, config.weight_shape
+            config.out_dtype, config.weight_shape, block_quant=False
         ):
             return False, "The provided metadata is not supported."
         return True, None
