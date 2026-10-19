@@ -61,6 +61,8 @@ EXPECTED_ARCHITECTURES = {
     "DeepseekV4ForCausalLM",
     "DeepSeekV4MTPModel",
     "DSparkDraftModel",
+    "GlmMoeDsaForCausalLM",
+    "DeepseekV32MTPModel",
     "MiniMaxM3SparseForCausalLM",
     "MiniMaxM3SparseForConditionalGeneration",
 }
@@ -78,11 +80,37 @@ def test_registered_architecture_inventory() -> None:
     assert set(models_pkg._PPU_MODELS) == EXPECTED_ARCHITECTURES
 
 
-def test_registration_targets_are_plugin_local_lazy_strings() -> None:
+def test_registration_targets_are_lazy_strings() -> None:
     for arch, target in models_pkg._PPU_MODELS.items():
         module_path, _, class_name = target.partition(":")
-        assert module_path.startswith("vllm_sail."), (arch, target)
+        if arch not in {"GlmMoeDsaForCausalLM", "DeepseekV32MTPModel"}:
+            assert module_path.startswith("vllm_sail."), (arch, target)
         assert class_name, (arch, target)
+
+
+@pytest.mark.parametrize(
+    "arch,upstream_class,ppu_target",
+    [
+        (
+            "GlmMoeDsaForCausalLM",
+            "GlmMoeDsaForCausalLM",
+            "vllm.model_executor.models.deepseek_v2:GlmMoeDsaForCausalLM",
+        ),
+        (
+            "DeepseekV32MTPModel",
+            "DeepSeekV32MTP",
+            "vllm.model_executor.models.deepseek_mtp:DeepSeekMTP",
+        ),
+    ],
+)
+def test_glm_and_mtp_replace_fp8_fused_models(
+    fresh_models_package, fake_vllm, arch, upstream_class, ppu_target
+) -> None:
+    fake_vllm.models[arch] = f"vllm.models.deepseek_v32:{upstream_class}"
+
+    models_pkg.register_model()
+
+    assert fake_vllm.models[arch] == ppu_target
 
 
 def test_module_imports_without_vllm() -> None:
@@ -250,27 +278,21 @@ def test_one_broken_model_does_not_break_the_hook(
     assert registered == EXPECTED_ARCHITECTURES - {"MiniMaxM3SparseForCausalLM"}
 
 
+@pytest.mark.parametrize(
+    "failed_arch",
+    ["DeepSeekV4MTPModel", "GlmMoeDsaForCausalLM", "DeepseekV32MTPModel"],
+)
 def test_required_registration_failure_is_transactional(
-    fresh_models_package, fake_vllm: _RecordingRegistry
+    fresh_models_package, fake_vllm: _RecordingRegistry, failed_arch
 ) -> None:
-    previous_main = object()
-    previous_mtp = object()
-    previous_dspark = object()
-    fake_vllm.models.update(
-        {
-            "DeepseekV4ForCausalLM": previous_main,
-            "DeepSeekV4MTPModel": previous_mtp,
-            "DSparkDraftModel": previous_dspark,
-        }
-    )
-    fake_vllm.fail_archs.add("DeepSeekV4MTPModel")
+    previous = {arch: object() for arch in models_pkg._REQUIRED_PPU_MODELS}
+    fake_vllm.models.update(previous)
+    fake_vllm.fail_archs.add(failed_arch)
 
     with pytest.raises(RuntimeError, match="restored the previous model registry"):
         models_pkg.register_model()
 
-    assert fake_vllm.models["DeepseekV4ForCausalLM"] is previous_main
-    assert fake_vllm.models["DeepSeekV4MTPModel"] is previous_mtp
-    assert fake_vllm.models["DSparkDraftModel"] is previous_dspark
+    assert fake_vllm.models == previous
     assert models_pkg._registered is False
 
 
