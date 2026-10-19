@@ -75,6 +75,12 @@ tests do not establish device correctness or full-model support.
 
 ## Model integration
 
+Loading-time `fp8-to-int8` and `fp8-to-bf16` paths are described in
+[FP8 conversion](online_quantization.md). They accept E4M3 128x128 block
+checkpoints with BF16 activations and reuse existing Dense/MoE backends.
+Device and model qualification is required; BF16-source automatic INT8
+quantization is not provided without an explicit recipe contract.
+
 | Model family or path | PPU integration |
 | --- | --- |
 | Dense and MoE models | Upstream vLLM architectures using the applicable PPU operators and backends |
