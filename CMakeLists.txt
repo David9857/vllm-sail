@@ -171,6 +171,9 @@ endfunction()
 # Ported upstream kernels. These claim upstream's own op namespaces
 # (_C, _C_cache_ops, _C_cuda_utils, _moe_C) -- see spec section 3.2.
 ppu_add_extension(_upstream_C SOURCES ${PPU_UPSTREAM_EXT_SRC})
+# Upstream guards both the declaration and schema/CUDA implementation binding.
+# The independently built HGGC corpus must enable them as well as compile the TU.
+target_compile_definitions(_upstream_C PRIVATE VLLM_ENABLE_FUSED_GDN_DECODE=1)
 ppu_add_extension(_upstream_moe_C SOURCES ${PPU_UPSTREAM_MOE_EXT_SRC})
 
 # Plugin-owned HGGC kernels and stable-ABI bindings, under private _ppu_* namespaces.

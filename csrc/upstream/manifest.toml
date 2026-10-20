@@ -120,6 +120,16 @@ _moe_C_stable_libtorch = "_upstream_moe_C"
 "          __syncwarp();\n        }\n      }\n\n      // Store." = "          VLLM_SAIL_ROPE_SYNCWARP();\n        }\n      }\n\n      // Store."
 "  // Select token_heads_per_warp: forced value if >0, else auto-select." = "  if (num_tokens == 0) return;\n\n  // Select token_heads_per_warp: forced value if >0, else auto-select."
 
+# Map GDN's PTX copies and group completion to the SAIL SDK pipeline on HGGC.
+# wait_all includes committing outstanding copies before waiting for all groups.
+# Keep upstream's double buffer, block barriers and CUDA PTX branch unchanged.
+[overlay.replace_text."csrc/libtorch_stable/gdn/fused_gdn_decode_kernel.cu"]
+"#include <hggc_runtime.h>" = "#include <hggc_runtime.h>\n#if defined(__HGGCCC__)\n#include <hggc_pipeline_primitives.h>\n#endif"
+"  const uint32_t smem_addr =" = "#if defined(__HGGCCC__)\n  __pipeline_memcpy_async(smem_ptr, gmem_ptr, 16);\n#else\n  const uint32_t smem_addr ="
+"               : \"r\"(smem_addr), \"l\"(gmem_ptr));" = "               : \"r\"(smem_addr), \"l\"(gmem_ptr));\n#endif"
+"  asm volatile(\"cp.async.commit_group;\\n\" ::);" = "#if defined(__HGGCCC__)\n  __pipeline_commit();\n#else\n  asm volatile(\"cp.async.commit_group;\\n\" ::);\n#endif"
+"  asm volatile(\"cp.async.wait_all;\\n\" ::: \"memory\");" = "#if defined(__HGGCCC__)\n  __pipeline_commit();\n  __pipeline_wait_prior(0);\n#else\n  asm volatile(\"cp.async.wait_all;\\n\" ::: \"memory\");\n#endif"
+
 # ---------------------------------------------------------------------------
 # Tier a -- core inference.
 # ---------------------------------------------------------------------------
@@ -174,6 +184,13 @@ path = "csrc/libtorch_stable/layernorm_kernels.cu"
 tier = "a"
 hazards = ["cub"]
 ops = ["fused_add_rms_norm", "rms_norm"]
+
+[[entry]]
+path = "csrc/libtorch_stable/gdn/fused_gdn_decode_kernel.cu"
+tier = "a"
+hazards = ["cp_async", "ptx"]
+ops = ["fused_gdn_decode_post_conv_mtp"]
+notes = "GDN MTP post-conv recurrence and gated RMSNorm, BF16/FP32 state. HGGC uses SAIL SDK pipeline primitives for 16-byte copies, commit and wait-all through the declared overlay; double buffering, warp shuffles and block barriers retain upstream semantics. Native compilation and PPU correctness validation pending."
 
 [[entry]]
 path = "csrc/libtorch_stable/layernorm_quant_kernels.cu"

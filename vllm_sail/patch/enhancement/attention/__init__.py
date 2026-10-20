@@ -18,6 +18,7 @@ Import order notes:
 from vllm_sail.patch.enhancement.attention import (
     fa_utils,  # noqa: F401
     gdn,  # noqa: F401
+    gdn_decode,  # noqa: F401
     kda,  # noqa: F401
     flash_attn,  # noqa: F401
     flashmla_ops,  # noqa: F401

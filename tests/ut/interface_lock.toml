@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.31.0,<0.32.0"
 key_interface_count = 10
-target_count = 253
+target_count = 257
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -96,6 +96,14 @@ module = "vllm/distributed/device_communicators/all2all.py"
 symbol = "DeepEPLLAll2AllManager._make_all2all_kwargs"
 present = true
 fingerprint = "sha256:f5637596191349ab986e9f06b1b069de4fcddf69626e79ed1ef5ace2312a6056"
+
+[[patch_target]]
+name = "vllm.envs.environment_variables"
+kind = "module"
+module = "vllm/envs.py"
+symbol = "environment_variables"
+present = true
+fingerprint = "sha256:5479fc6a1dd73523255feadb0a1a58abb5cefff0e88cbba5e4f713c779876cb9"
 
 [[patch_target]]
 name = "vllm.lora.layers.utils.try_get_optimal_moe_config"
@@ -760,6 +768,30 @@ module = "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py"
 symbol = "ChunkGatedDeltaRule.forward_pla"
 present = false
 fingerprint = ""
+
+[[patch_target]]
+name = "vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn.QwenGatedDeltaNetAttention.__init__"
+kind = "class"
+module = "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py"
+symbol = "QwenGatedDeltaNetAttention.__init__"
+present = true
+fingerprint = "sha256:c579bccabc52c9d51a4ebabc9ff09e8782518b974db8ecdbe182885344980eba"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn.QwenGatedDeltaNetAttention._can_use_fused_gdn_mtp_decode"
+kind = "class"
+module = "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py"
+symbol = "QwenGatedDeltaNetAttention._can_use_fused_gdn_mtp_decode"
+present = true
+fingerprint = "sha256:b3f2aebb8ec382da4da961a906461a23b246da9e313d9bd098176b4432149ad2"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn.QwenGatedDeltaNetAttention._fused_gdn_decode_unsupported_reason"
+kind = "class"
+module = "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py"
+symbol = "QwenGatedDeltaNetAttention._fused_gdn_decode_unsupported_reason"
+present = true
+fingerprint = "sha256:f942e0fa55357679ad3a7e1e39ebd200df1dc198824e79c50c7bf2b3893b2150"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn._log_gdn_backend_decision"

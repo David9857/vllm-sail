@@ -116,6 +116,45 @@ These tests require a real PPU and the applicable SDK libraries. Verify that the
 intended tests actually ran. Include dtype, shape, tolerance and device in a
 correctness report, and test both architecture targets when claiming both.
 
+### GDN fused MTP decode
+
+Run the native GDN MTP accuracy matrix with a native plugin build:
+
+```bash
+python -m pytest tests/e2e/gdn/test_gdn_fused_mtp.py -q -rs \
+  -o junit_family=xunit1 --junitxml=gdn-mtp-accuracy.xml
+```
+
+The tests call the native fused op directly and force the unfused reference onto
+Triton, bypassing PLA. Selected cases also compare with an independent eager
+PyTorch reference. On PPU, a missing native dispatch registration fails the
+suite rather than skipping it.
+
+Coverage includes all supported head ratios, BF16/FP32 recurrent state and norm
+weights, FP16/BF16/FP32 gate bias, SiLU/sigmoid output gates, MTP lengths 1–8,
+strided rows and state slots, padding and NULL slots, and repeated accepted-token
+rewind with changing request lengths. Every round checks outputs, candidate
+state writes, unused state storage and output-buffer guards. The suite also
+tests numerical boundaries and the layer's post-convolution entry point.
+
+The native-versus-Triton output keeps upstream's relative-L2 limit of `5e-4`;
+pointwise output/state comparisons retain the upstream model-path tolerances
+`atol=rtol=3e-2`. Each written slot additionally has a relative-L2 limit of `3e-2`.
+Untouched slots and buffer guards must remain bitwise identical. The JUnit file
+records relative-L2 and maximum absolute errors per round. These limits are
+source-derived, not calibrated from a PPU run; investigate failures before
+changing them.
+
+The independent oracle has worked-example CPU tests that run when torch is
+available:
+
+```bash
+python -m pytest tests/ut/test_gdn_mtp_reference.py -q
+```
+
+CPU oracle tests and device-test collection do not establish native accuracy.
+Record actual execution counts and skips from the PPU command above.
+
 ## 4. Run a model
 
 Follow the [quickstart](../getting_started/quickstart.md) with a checkpoint

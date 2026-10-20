@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_NVTX_DUMP_TOPK: bool = False
     VLLM_SAIL_NVTX_VFA_DUMP_SEQLEN: bool = False
     VLLM_DEEPEPLL_RECV_HOOK: bool = True
+    VLLM_GDN_DECODE_KERNEL: str = "auto"
 
     # Backward-compatible Python attributes; all reads resolve SAIL first.
     VLLM_PPU_FUSED_RMSNORM_QUANT: bool = False
@@ -69,6 +70,7 @@ _TRUTHY = ("true", "1", "yes", "on")
 
 #: Backend names accepted by both MoE and dense GEMM selection.
 GEMM_BACKENDS = ("deepgemm", "acext", "triton")
+GDN_DECODE_KERNELS = ("auto", "cuda", "pla", "triton")
 
 
 def _env_names(name: str) -> tuple[str, ...]:
@@ -119,6 +121,10 @@ def _choice(
 
 environment_variables: dict[str, Callable[[], Any]] = {
     "PPU_SDK": lambda: os.environ.get("PPU_SDK", "/usr/local/PPU_SDK"),
+    # Shared upstream name; PPU extends the choices through its general plugin.
+    "VLLM_GDN_DECODE_KERNEL": _choice(
+        "VLLM_GDN_DECODE_KERNEL", "auto", GDN_DECODE_KERNELS
+    ),
     "VLLM_SAIL_FUSED_RMSNORM_QUANT": _bool("VLLM_SAIL_FUSED_RMSNORM_QUANT", False),
     "VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT": _bool(
         "VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT", False
@@ -168,7 +174,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
 }
 
 # All plugin variables retain the corresponding PPU spelling. The shared
-# upstream VLLM_DEEPEPLL_RECV_HOOK keeps its name and has no plugin alias.
+# upstream VLLM_DEEPEPLL_RECV_HOOK and VLLM_GDN_DECODE_KERNEL keep their names
+# and have no plugin aliases.
 _aliases: dict[str, tuple[str, ...]] = {
     name: (name.replace("VLLM_SAIL_", "VLLM_PPU_", 1),)
     for name in environment_variables

@@ -34,6 +34,7 @@ application in the allowlist.
 | `VLLM_SAIL_DENSE_BF16_DEEPGEMM` | `0` | Opt into the PPU 1.5 BF16 dense DeepGEMM path |
 | `VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED` | `1` | Enable the supported fused tensor-parallel MoE path |
 | `VLLM_SAIL_USE_PLA` | `1` | Allow PLA linear-attention paths where available |
+| `VLLM_GDN_DECODE_KERNEL` | `auto` on PPU | `auto`, `cuda`, `pla`, `triton`; selects GDN decode independently of prefill and KDA |
 | `VLLM_SAIL_FUSED_RMSNORM_QUANT` | `0` | Enable supported fused RMSNorm and quantization paths |
 | `VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT` | `0` | Enable the optimized token-group quantization path |
 | `VLLM_SAIL_USE_TRITON_INT8_QUANT` | `1` | Use Triton dynamic per-token INT8 quantization |
@@ -49,6 +50,20 @@ Leave backend variables unset for normal capability-based selection. An explicit
 choice still requires the corresponding library, device support and compatible
 tensor layout. Avoid setting overlapping backend controls while diagnosing a
 selection issue.
+
+On PPU, GDN decode `auto` prefers PLA when the legacy `VLLM_SAIL_USE_PLA`
+switch permits it and the model uses supported head dimensions and FP32 SSM
+state. Otherwise it tries the registered native fused kernel, then Triton.
+An explicit `pla`, `cuda` or `triton` choice overrides that legacy switch for
+GDN decode only. Prefill and KDA retain their existing selection.
+
+PLA decode requires `--mamba-ssm-cache-dtype float32` and K=V=128; the resolver
+does not change an existing cache dtype. Missing dependencies or unsupported
+static configurations fail early for explicit choices. Native `cuda` requires
+a real CUDA dispatch implementation, not just an operation schema or an
+unsupported-op stub. Its fused MTP kernel applies only to eligible batches;
+other batches use the existing Triton path. The new HGGC port still requires
+native build and device correctness verification before deployment.
 
 ## Compatibility controls
 

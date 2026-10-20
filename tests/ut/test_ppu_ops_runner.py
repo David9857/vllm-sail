@@ -158,7 +158,7 @@ def test_runtime_expansion_preserves_other_board(runner):
     original = {
         "mode": "subset",
         "test_ids": ["kda"],
-        "files": ["tests/e2e/fork_port/test_kda.py"],
+        "files": ["tests/e2e/gdn/test_kda.py"],
         **selector.route_tests(config, ["kda"]),
     }
     effective = runner.effective_selection(config, original, b"original", "ppu10", True)

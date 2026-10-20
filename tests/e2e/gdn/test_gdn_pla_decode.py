@@ -31,7 +31,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 if not torch.cuda.is_available():
-    pytest.skip("requires real PPU for fork kernel parity", allow_module_level=True)
+    pytest.skip("requires real PPU for native kernel parity", allow_module_level=True)
 pytest.importorskip("vllm")
 import vllm_sail
 
@@ -74,6 +74,7 @@ def _requires_ppu_pla():
 
 def _force_triton(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the wrappers onto the community Triton kernels."""
+    monkeypatch.setenv("VLLM_GDN_DECODE_KERNEL", "triton")
     monkeypatch.setattr(sail_cuda_pla, "_resolved", True)
     monkeypatch.setattr(sail_cuda_pla, "_k_last_fn", None)
     monkeypatch.setattr(sail_cuda_pla, "_k_last_packed_fn", None)
@@ -83,6 +84,7 @@ def _force_cuda(
     monkeypatch: pytest.MonkeyPatch, pla_module, *, record_calls: bool = False
 ) -> SimpleNamespace:
     """Enable real PLA with optional call recording; keep Mock overhead out of benchmarks."""
+    monkeypatch.setenv("VLLM_GDN_DECODE_KERNEL", "pla")
     monkeypatch.setenv("VLLM_SAIL_USE_PLA", "1")
     kernels = SimpleNamespace(
         k_last=pla_module.fused_sigmoid_gating_delta_rule_forward_k_last,

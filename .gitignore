@@ -25,6 +25,7 @@ venv/
 .nox/
 .ipynb_checkpoints/
 .triton/
+.qoder/
 
 # Test and coverage output
 .coverage*

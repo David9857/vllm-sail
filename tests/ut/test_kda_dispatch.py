@@ -105,7 +105,7 @@ def test_ppu_kda_cannot_select_nvidia_kernel_when_pla_disabled(monkeypatch, mode
 )
 def test_device_predicate_calls_bind_all_required_arguments(name):
     fn = function("vllm_sail/patch/enhancement/attention/kda.py", name, {})
-    path = Path(__file__).parents[1] / "e2e/fork_port/test_kda.py"
+    path = Path(__file__).parents[1] / "e2e/gdn/test_kda.py"
     calls = [
         node
         for node in ast.walk(ast.parse(path.read_text()))

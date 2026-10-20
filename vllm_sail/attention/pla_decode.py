@@ -11,9 +11,9 @@ external ``pla`` package (Fused Sigmoid Gating Delta Rule CUDA kernels):
 * ``fused_sigmoid_gating_delta_rule_forward_k_last``
 * ``fused_sigmoid_gating_delta_rule_forward_k_last_packed``
 
-The routing is controlled by the ``VLLM_SAIL_USE_PLA`` environment variable
-(default: on) and is only effective when all of the
-following hold:
+The routing is controlled by ``VLLM_GDN_DECODE_KERNEL``. Explicit ``pla``
+selects these kernels, ``cuda``/``triton`` bypass them, and ``auto`` retains
+``VLLM_SAIL_USE_PLA`` as its compatibility preference. It is effective when:
 
 * running on the PPU platform (``current_platform.is_ppu()``);
 * the ``pla`` package is importable;
@@ -23,10 +23,9 @@ following hold:
   as NULL_BLOCK_ID (unlike sglang's PAD_SLOT_ID = -1) -- every call passes
   ``is_sglang=False``.
 
-If ``VLLM_SAIL_USE_PLA`` is enabled (the default) but the ``pla`` package
-cannot be imported on the PPU platform, an ``ImportError`` is raised so
-that the caller can decide how to handle the missing dependency (e.g.
-fall back to Triton, or surface the error to the user).
+An explicit ``pla`` request raises on a missing dependency; ``auto`` permits
+the GDN resolver to select another backend. Prefill and KDA have separate
+resolvers and retain their existing legacy switch behavior.
 """
 
 import threading
@@ -37,6 +36,7 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 
 from vllm_sail import envs
+from vllm_sail.attention.gdn_decode import pla_decode_enabled
 
 logger = init_logger(__name__)
 
@@ -52,11 +52,10 @@ def _resolve_sail_cuda_pla() -> None:
     Thread-safe: guarded by a module-level lock so concurrent calls from
     multiple threads resolve exactly once.
 
-    Raises ``ImportError`` when ``VLLM_SAIL_USE_PLA`` is enabled on the PPU
-    platform but the ``pla`` package is not installed.
+    Raises ``ImportError`` for an explicit PLA request with a missing package.
     """
     global _resolved, _k_last_fn, _k_last_packed_fn
-    if not current_platform.is_ppu() or not envs.VLLM_SAIL_USE_PLA:
+    if not current_platform.is_ppu() or not pla_decode_enabled():
         return
     # Fast path: after the first resolution, skip the lock entirely.
     if _resolved:
@@ -65,14 +64,7 @@ def _resolve_sail_cuda_pla() -> None:
         if _resolved:
             return
 
-        if not envs.VLLM_SAIL_USE_PLA:
-            logger.warning_once(
-                "VLLM_SAIL_USE_PLA is disabled; falling back to the community "
-                "Triton PLA kernels. WARNING: using the Triton implementation "
-                "will result in SIGNIFICANT performance degradation. "
-                "Install the PLA library and remove the VLLM_SAIL_USE_PLA=0 "
-                "setting to restore full performance."
-            )
+        if not pla_decode_enabled():
             return
         if not current_platform.is_ppu():
             return
@@ -82,25 +74,30 @@ def _resolve_sail_cuda_pla() -> None:
                 fused_sigmoid_gating_delta_rule_forward_k_last,
                 fused_sigmoid_gating_delta_rule_forward_k_last_packed,
             )
-        except ImportError as exc:
+        except (ImportError, OSError) as exc:
+            if envs.VLLM_GDN_DECODE_KERNEL == "auto":
+                logger.warning_once(
+                    "PLA decode is unavailable; GDN auto will use another backend: %s",
+                    exc,
+                )
+                return
             raise ImportError(
-                "VLLM_SAIL_USE_PLA is enabled but the PPU `pla` package "
-                "is not installed. Install the PLA library or set "
-                "VLLM_SAIL_USE_PLA=0 to fall back to Triton."
+                "VLLM_GDN_DECODE_KERNEL=pla but the PPU `pla` decode package "
+                f"cannot load: {exc}. Install a compatible PLA library or select "
+                "VLLM_GDN_DECODE_KERNEL=triton."
             ) from exc
 
         _k_last_fn = fused_sigmoid_gating_delta_rule_forward_k_last
         _k_last_packed_fn = fused_sigmoid_gating_delta_rule_forward_k_last_packed
         _resolved = True
         logger.info_once(
-            "VLLM_SAIL_USE_PLA is enabled: routing GDN decode to the PPU SAIL "
-            "CUDA PLA kernels (k_last / k_last_packed)."
+            "GDN PLA decode kernels are available (k_last / k_last_packed)."
         )
 
 
 def get_sail_cuda_pla_k_last() -> Callable[..., Any] | None:
     """Return ``fused_sigmoid_gating_delta_rule_forward_k_last`` if usable."""
-    if not current_platform.is_ppu() or not envs.VLLM_SAIL_USE_PLA:
+    if not current_platform.is_ppu() or not pla_decode_enabled():
         return None
     _resolve_sail_cuda_pla()
     return _k_last_fn
@@ -108,7 +105,7 @@ def get_sail_cuda_pla_k_last() -> Callable[..., Any] | None:
 
 def get_sail_cuda_pla_k_last_packed() -> Callable[..., Any] | None:
     """Return ``fused_sigmoid_gating_delta_rule_forward_k_last_packed``."""
-    if not current_platform.is_ppu() or not envs.VLLM_SAIL_USE_PLA:
+    if not current_platform.is_ppu() or not pla_decode_enabled():
         return None
     _resolve_sail_cuda_pla()
     return _k_last_packed_fn

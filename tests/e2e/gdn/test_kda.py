@@ -12,7 +12,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 if not torch.cuda.is_available():
-    pytest.skip("requires real PPU for fork kernel parity", allow_module_level=True)
+    pytest.skip("requires real PPU for native kernel parity", allow_module_level=True)
 pytest.importorskip("vllm")
 import vllm_sail
 

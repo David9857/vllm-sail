@@ -342,7 +342,7 @@ def test_resource_exclusions_survive_selection_protocol(
             "subset",
             ["gdn-decode", "gdn-prefill"],
         ),
-        (["tests/e2e/fork_port/_tolerances.py"], "subset", ["gdn-decode"]),
+        (["tests/e2e/gdn/_tolerances.py"], "subset", ["gdn-decode"]),
         (["tests/e2e/test_native_activation.py"], "subset", ["activation"]),
         (["tests/e2e/test_fp8_linear_dispatch.py"], "subset", ["fp8-linear"]),
         (

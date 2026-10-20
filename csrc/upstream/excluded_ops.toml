@@ -226,14 +226,6 @@ reason = "not declared in csrc/upstream/manifest.toml"
 
 [[op]]
 namespace = "_C"
-name = "fused_gdn_decode_post_conv_mtp"
-schema = "fused_gdn_decode_post_conv_mtp(Tensor mixed_qkv, Tensor a, Tensor b, Tensor A_log, Tensor dt_bias, Tensor state_indices, Tensor cu_seqlens, Tensor num_accepted_tokens, Tensor! state, Tensor output_gate, Tensor norm_weight, Tensor! out, float scale, float norm_eps=1e-5, str output_gate_activation='silu') -> ()"
-kind = "compute"
-tier = "unclaimed"
-reason = "not declared in csrc/upstream/manifest.toml"
-
-[[op]]
-namespace = "_C"
 name = "fused_kda_chunk"
 schema = "fused_kda_chunk(Tensor qg, Tensor w, Tensor u, Tensor kg_t, Tensor aqk, Tensor decay, Tensor? initial_state, Tensor(a!)? final_state, Tensor! out, Tensor cu_seqlens, Tensor chunk_offsets, float scale, Tensor(b!)? group_state, int groups, Tensor(c!)? checkpoint_state=None, Tensor? checkpoint_offsets=None, Tensor? checkpoint_state_indices=None, Tensor(d!)? state_cache=None, Tensor? state_indices=None, Tensor? has_initial_state=None) -> ()"
 kind = "compute"

@@ -40,7 +40,7 @@
       },
       {
         "id": "gdn-decode-helpers",
-        "paths": ["tests/e2e/fork_port/_tolerances.py"],
+        "paths": ["tests/e2e/gdn/_tolerances.py"],
         "test_ids": ["gdn-decode"]
       },
       {
@@ -76,9 +76,9 @@
     {"id": "deepseek-native", "test": "tests/e2e/test_deepseek_v4_native.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
     {"id": "fp8-linear", "test": "tests/e2e/test_fp8_linear_dispatch.py", "boards": ["ppu15"], "requires": ["deep_gemm", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
     {"id": "fork-quantization", "test": "tests/e2e/test_fork_quantization.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {"test_fused_norm_matches_native_then_quantize": ["ppu15"]}},
-    {"id": "gdn-decode", "test": "tests/e2e/fork_port/test_gdn_pla_decode.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.decode", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
-    {"id": "gdn-prefill", "test": "tests/e2e/fork_port/test_gdn_pla_prefill.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.prefill.flashqla", "pla.prefill.flashqla.ops", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
-    {"id": "kda", "test": "tests/e2e/fork_port/test_kda.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.decode.kda", "pla.prefill.flashkdapro", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "gdn-decode", "test": "tests/e2e/gdn/test_gdn_pla_decode.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.decode", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "gdn-prefill", "test": "tests/e2e/gdn/test_gdn_pla_prefill.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.prefill.flashqla", "pla.prefill.flashqla.ops", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
+    {"id": "kda", "test": "tests/e2e/gdn/test_kda.py", "boards": ["ppu10", "ppu15"], "requires": ["pla", "pla.decode.kda", "pla.prefill.flashkdapro", "torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
     {"id": "indexer-int8-cache", "test": "tests/e2e/test_indexer_int8_cache.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
     {"id": "kimi-mla", "test": "tests/e2e/tier_b/test_kimi_k3.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},
     {"id": "merge-mla", "test": "tests/e2e/tier_b/test_merge_and_mla.py", "boards": ["ppu10", "ppu15"], "requires": ["torch", "triton", "vllm", "vllm_sail"], "board_overrides": {}},

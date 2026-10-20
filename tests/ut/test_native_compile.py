@@ -30,6 +30,119 @@ def _run(argv: list[str], *, env: dict[str, str] | None = None) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_gdn_native_binding_guards_are_enabled_by_the_build(tmp_path):
+    """Preprocess shipped bindings with the target's actual build definitions."""
+    compiler = _tool("c++")
+    source = (ROOT / "CMakeLists.txt").read_text()
+    definitions = re.findall(
+        r"target_compile_definitions\(_upstream_C\s+PRIVATE\s+([^)]*)\)", source
+    )
+    flags = [f"-D{item}" for definition in definitions for item in definition.split()]
+    for filename in ("torch_bindings.cpp", "ops.h"):
+        unit = tmp_path / filename
+        body = (ROOT / "csrc/upstream/libtorch_stable" / filename).read_text()
+        unit.write_text(re.sub(r"^\s*#\s*include[^\n]*", "", body, flags=re.MULTILINE))
+        result = subprocess.run(
+            [compiler, "-E", "-P", "-x", "c++", *flags, str(unit)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "fused_gdn_decode_post_conv_mtp" in result.stdout
+        if filename == "torch_bindings.cpp":
+            assert 'ops.impl("fused_gdn_decode_post_conv_mtp"' in result.stdout
+
+
+def test_gdn_hg_helpers_commit_and_wait_for_pipeline_copies(tmp_path):
+    """Exercise generated adapters against a deferred-copy SDK test double."""
+    compiler = _tool("c++")
+    source = (
+        ROOT / "csrc/upstream/libtorch_stable/gdn/fused_gdn_decode_kernel.cu"
+    ).read_text()
+    # Retain the actual SDK pipeline include and its guard, without unrelated
+    # device/torch headers. The host test does not establish SDK compatibility.
+    includes = source[: source.index("namespace {")]
+    includes = re.sub(
+        r"^#include (?!<hggc_pipeline_primitives\.h>)[^\n]*",
+        "",
+        includes,
+        flags=re.MULTILINE,
+    )
+    start = source.index("template <typename StateT>")
+    end = source.index("template <typename StateT>\n__device__ __forceinline__ float4")
+    (tmp_path / "hggc_pipeline_primitives.h").write_text(
+        r"""
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+struct Copy { void* dst; const void* src; };
+std::vector<Copy> pending, committed;
+std::string events;
+void __pipeline_memcpy_async(void* dst, const void* src, std::size_t bytes) {
+  assert(bytes == 16);
+  pending.push_back({dst, src});
+  events += 'i';
+}
+void __pipeline_commit() {
+  committed.insert(committed.end(), pending.begin(), pending.end());
+  pending.clear();
+  events += 'c';
+}
+void __pipeline_wait_prior(int remaining) {
+  assert(remaining == 0);
+  assert(pending.empty());
+  for (const auto& copy : committed) std::memcpy(copy.dst, copy.src, 16);
+  committed.clear();
+  events += 'w';
+}
+"""
+    )
+    checks = r"""
+template <typename StateT> void check() {
+  alignas(16) StateT src[16 / sizeof(StateT)], dst[16 / sizeof(StateT)] = {};
+  for (unsigned i = 0; i < 16 / sizeof(StateT); ++i) src[i] = StateT(i + 1);
+  events.clear();
+  cp_async_16b(dst, src);
+  assert(dst[0] == 0 && events == "i");
+  cp_async_commit();
+  assert(dst[0] == 0 && events == "ic" && pending.empty());
+  cp_async_wait_all();
+  assert(std::memcmp(dst, src, 16) == 0 && events == "iccw");
+
+  // PTX wait_all implicitly commits outstanding, uncommitted copies too.
+  std::memset(dst, 0, 16);
+  events.clear();
+  cp_async_16b(dst, src);
+  cp_async_wait_all();
+  assert(std::memcmp(dst, src, 16) == 0 && events == "icw");
+}
+int main() { check<float>(); check<uint16_t>(); }
+"""
+    unit = tmp_path / "gdn_pipeline.cpp"
+    unit.write_text(
+        includes
+        + "\n#define __device__\n#define __forceinline__ inline\n"
+        + source[start:end]
+        + checks
+    )
+    executable = tmp_path / "gdn_pipeline"
+    _run(
+        [
+            compiler,
+            "-std=c++17",
+            "-D__HGGCCC__=1",
+            "-I",
+            str(tmp_path),
+            str(unit),
+            "-o",
+            str(executable),
+        ]
+    )
+    _run([str(executable)])
+
+
 @pytest.mark.parametrize(
     ("environment", "settings", "expected"),
     [
