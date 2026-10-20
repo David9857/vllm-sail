@@ -299,9 +299,13 @@ def validate_config(config, repo):
                 any(board in overrides.get(f, boards) for f in functions),
                 "Board has no applicable test functions",
             )
-    require(
-        discovered == tests, f"Incomplete test catalog: {sorted(discovered ^ tests)}"
-    )
+    catalog_directories = {(repo / path).parent for path in tests}
+    discovered = {
+        path.relative_to(repo).as_posix()
+        for directory in catalog_directories
+        for path in directory.glob("test_*.py")
+    }
+    require(discovered == tests, f"Test catalog is incomplete: {sorted(discovered ^ tests)}")
     rules = config["selection_rules"]
     keys(rules, ("full", "no_effect", "source_to_tests"))
     for category in ("full", "no_effect"):
