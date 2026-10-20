@@ -59,10 +59,16 @@ logger = logging.getLogger("vllm-sail-build")
 
 _ROOT = Path(__file__).resolve().parent
 
-# The marker extension. CMake builds all four targets in one invocation, so only
-# one Extension is declared -- enough to make the wheel platform-specific and to
-# let setuptools compute the output directory (including for --inplace).
-_MARKER_EXT = "vllm_sail._upstream_C"
+# One Extension per CMake target. CMake still builds all four in a single
+# invocation, but each output must be declared: PEP 660 editable installs build
+# into build_lib and setuptools then copies back exactly the declared
+# extensions, while the wheel packages build_lib as a whole.
+_EXT_NAMES = (
+    "vllm_sail._upstream_C",
+    "vllm_sail._upstream_moe_C",
+    "vllm_sail._C",
+    "vllm_sail._moe_C",
+)
 
 
 def _load(name: str):
@@ -112,9 +118,11 @@ class _CMakeBuildExt(build_ext):
     and CMake is told to put all four there via ``PPU_EXT_OUTPUT_DIR``.
     """
 
+    def build_extensions(self) -> None:
+        if self.extensions:
+            self.build_extension(self.extensions[0])
+
     def build_extension(self, ext: Extension) -> None:
-        if not self.extensions:
-            return
         decision = _toolchain.decide(_toolchain.probe())
         if not decision.build:  # The opt-out must be present when setup initializes.
             raise _toolchain.NativeBuildError(
@@ -194,7 +202,7 @@ else:
         "vllm-sail: compiled extensions enabled by default; validating the PPU "
         "toolchain during build_ext"
     )
-    _EXT_MODULES = [Extension(_MARKER_EXT, sources=[])]
+    _EXT_MODULES = [Extension(name, sources=[]) for name in _EXT_NAMES]
     _BUILD_EXT = _CMakeBuildExt
 
 setup(
