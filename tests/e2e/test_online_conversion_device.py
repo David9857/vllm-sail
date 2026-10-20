@@ -27,9 +27,11 @@ def runtime(monkeypatch):
         yield torch
 
 
-@pytest.mark.parametrize("target", ["bf16", "int8"])
+@pytest.mark.parametrize(
+    "source,target", [("fp8", "bf16"), ("fp8", "int8"), ("bf16", "int8")]
+)
 @pytest.mark.parametrize("bias", [False, True])
-def test_dense_conversion_forward_and_idempotency(runtime, target, bias):
+def test_dense_conversion_forward_and_idempotency(runtime, source, target, bias):
     torch = runtime
     from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
         Fp8ConversionLinearMethod,
@@ -42,11 +44,14 @@ def test_dense_conversion_forward_and_idempotency(runtime, target, bias):
     torch.manual_seed(23)
     with torch.device("cuda"):
         layer = torch.nn.Module()
-        method = Fp8ConversionLinearMethod(target)
+        method = Fp8ConversionLinearMethod(target, source_dtype=source)
         method.create_weights(layer, 256, [128, 128], 256, 256, torch.bfloat16)
-        layer.weight.data.copy_(torch.randn(256, 256).to(torch.float8_e4m3fn))
-        layer.weight_scale_inv.data.fill_(0.03125)
-        decoded = dequantize_fp8(layer.weight, layer.weight_scale_inv)
+        layer.weight.data.copy_(torch.randn(256, 256).to(layer.weight.dtype))
+        if source == "fp8":
+            layer.weight_scale_inv.data.fill_(0.03125)
+            decoded = dequantize_fp8(layer.weight, layer.weight_scale_inv)
+        else:
+            decoded = layer.weight.detach().clone()
         expected_q, expected_scale = quantize_int8(decoded)
         method.process_weights_after_loading(layer)
         assert layer.weight_scale_inv is None
@@ -75,3 +80,112 @@ def test_dense_conversion_forward_and_idempotency(runtime, target, bias):
         assert torch.isfinite(actual).all()
         relative = (actual.float() - expected).norm() / expected.norm()
         assert relative.item() < (0.025 if target == "int8" else 0.01)
+
+
+@pytest.mark.parametrize(
+    "source,target", [("fp8", "bf16"), ("fp8", "int8"), ("bf16", "int8")]
+)
+def test_moe_conversion_forward(runtime, source, target):
+    torch = runtime
+    from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+    from vllm.model_executor.layers.fused_moe.config import (
+        FusedMoEConfig,
+        FusedMoEParallelConfig,
+        RoutingMethodType,
+    )
+    from vllm.model_executor.layers.fused_moe.expert_map_manager import ExpertMapManager
+    from vllm.model_executor.layers.fused_moe.routed_experts import RoutedExperts
+
+    from vllm_sail.model_executor.layers.quantization.bf16_to_int8 import (
+        Bf16ToInt8Config,
+    )
+    from vllm_sail.model_executor.layers.quantization.fp8_to_bf16 import Fp8ToBf16Config
+    from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
+    from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (
+        dequantize_fp8,
+    )
+
+    parallel = FusedMoEParallelConfig(
+        tp_size=1,
+        pcp_size=1,
+        dp_size=1,
+        ep_size=1,
+        tp_rank=0,
+        pcp_rank=0,
+        dp_rank=0,
+        ep_rank=0,
+        sp_size=1,
+        use_ep=False,
+        all2all_backend="allgather_reducescatter",
+        enable_eplb=False,
+    )
+    moe = FusedMoEConfig(
+        num_experts=4,
+        experts_per_token=2,
+        hidden_dim=128,
+        intermediate_size=256,
+        num_local_experts=4,
+        num_logical_experts=4,
+        activation=MoEActivation.SILU,
+        device="cuda",
+        routing_method=RoutingMethodType.Default,
+        moe_parallel_config=parallel,
+        in_dtype=torch.bfloat16,
+    )
+    manager = ExpertMapManager(
+        max_num_batched_tokens=8,
+        top_k=2,
+        global_num_experts=4,
+        num_redundant_experts=0,
+        num_expert_group=None,
+        moe_parallel_config=parallel,
+        placement_strategy="linear",
+        enable_eplb=False,
+    )
+    if source == "bf16":
+        config = Bf16ToInt8Config()
+    else:
+        cls = Fp8ToInt8Config if target == "int8" else Fp8ToBf16Config
+        config = cls({"quant_method": "fp8", "weight_block_size": [128, 128]})
+    config.maybe_update_config("unknown")
+    torch.manual_seed(56)
+    with torch.device("cuda"):
+        layer = RoutedExperts(
+            "model.layers.0.mlp.experts", torch.bfloat16, moe, config, manager
+        )
+        reference = {}
+        for name in ("w13", "w2"):
+            weight = getattr(layer, name + "_weight")
+            weight.data.copy_(
+                (torch.randn(weight.shape) * (1 if source == "fp8" else 0.03)).to(
+                    weight.dtype
+                )
+            )
+            scales = getattr(layer, name + "_weight_scale_inv")
+            if scales is not None:
+                scales.data.fill_(0.03125)
+                reference[name] = torch.stack(
+                    [dequantize_fp8(w, s) for w, s in zip(weight, scales, strict=True)]
+                ).float()
+            else:
+                reference[name] = weight.detach().float().clone()
+        x = torch.randn(4, 128, dtype=torch.bfloat16)
+        ids = torch.tensor([[0, 1], [1, 2], [2, 3], [0, 3]], dtype=torch.int32)
+        routing = torch.full((4, 2), 0.5, dtype=torch.float32)
+        expected = torch.zeros_like(x, dtype=torch.float32)
+        for token in range(4):
+            for expert in ids[token].tolist():
+                gate, up = (reference["w13"][expert] @ x[token].float()).chunk(2)
+                expected[token] += 0.5 * (
+                    reference["w2"][expert] @ (torch.nn.functional.silu(gate) * up)
+                )
+        layer.quant_method.process_weights_after_loading(layer)
+        pointer = layer.w13_weight.data_ptr()
+        layer.quant_method.process_weights_after_loading(layer)
+        assert layer.w13_weight.data_ptr() == pointer
+        actual = layer.quant_method.apply(layer, x, routing, ids, None, None)
+        assert actual.shape == expected.shape
+        assert torch.isfinite(actual).all()
+        assert ((actual.float() - expected).norm() / expected.norm()).item() < (
+            0.05 if target == "int8" else 0.02
+        )

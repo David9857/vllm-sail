@@ -85,6 +85,7 @@ def test_public_registry_registers_once_only_on_ppu(monkeypatch, is_ppu):
         ("mixed_precision_w4", "MixedPrecisionW4Config", "mixed_precision_w4"),
         ("fp8_to_int8", "Fp8ToInt8Config", "fp8-to-int8"),
         ("fp8_to_bf16", "Fp8ToBf16Config", "fp8-to-bf16"),
+        ("bf16_to_int8", "Bf16ToInt8Config", "bf16-to-int8"),
     ):
         modules[f"vllm_sail.model_executor.layers.quantization.{file}"] = {
             cls: type(cls, (), {"get_name": classmethod(lambda cls, n=name: n)})
@@ -107,7 +108,7 @@ def test_public_registry_registers_once_only_on_ppu(monkeypatch, is_ppu):
     module.register()
     expected = ["mixed_precision_w4"]
     if is_ppu:
-        expected += ["fp8-to-int8", "fp8-to-bf16", "deepseek_v4_fp8"]
+        expected += ["fp8-to-int8", "fp8-to-bf16", "bf16-to-int8", "deepseek_v4_fp8"]
     assert names == expected
 
 
@@ -122,6 +123,7 @@ def test_public_registry_registers_once_only_on_ppu(monkeypatch, is_ppu):
         {"scales_path": "cache.safetensors"},
         {"mix_layers": [0]},
         {"ignored_layers": "not-a-list"},
+        {"ignored_layers": ["a"], "modules_to_not_convert": ["b"]},
     ],
 )
 def test_invalid_checkpoint_metadata(changes):
@@ -141,7 +143,7 @@ def test_mapper_is_idempotent_and_keeps_runtime_patterns():
     mapper = SimpleNamespace(apply_list=lambda names: ["mapped." + n for n in names])
     config = SimpleNamespace(
         _source_ignored=["layer", "re:^visual"],
-        _floating_layers=["re:.*in_proj_ba$"],
+        _target_ignored=["layer", "re:^visual", "re:.*in_proj_ba$"],
     )
     apply = function(QUANT + "fp8_to_int8.py", "Fp8ToInt8Config.apply_vllm_mapper", {})
     apply(config, mapper)
@@ -266,12 +268,11 @@ def test_upstream_model_config_resolution(
 
 
 def test_floating_safety_patterns_do_not_match_fused_gate_up():
-    config = definition(ROOT / (QUANT + "fp8_to_int8.py"), "Fp8ToInt8Config")
-    patterns = next(
-        ast.literal_eval(n.value)
-        for n in config.body
-        if isinstance(n, ast.Assign) and n.targets[0].id == "_floating_layers"
+    from vllm_sail.model_executor.layers.quantization.online_conversion.recipe import (
+        select_recipe,
     )
+
+    patterns = select_recipe("unknown", None, "bf16")["ignored_layers"]
     assert not any(
         re.search(p[3:], "model.layers.0.mlp.gate_up_proj") for p in patterns
     )

@@ -26,20 +26,7 @@ logger = init_logger(__name__)
 
 class Fp8ToInt8Config(QuantizationConfig):
     target_dtype = "int8"
-    # Preserve the fork's floating-layer safety rules. Checked loaders reject
-    # checkpoints that actually store FP8 here rather than silently casting.
-    _floating_layers = [
-        r"re:.*lm_head$",
-        r"re:.*embed_tokens$",
-        r"re:(^|\.)visual(\.|$)",
-        r"re:.*\.mlp\.gate$",
-        r"re:.*\.mlp\.shared_expert_gate$",
-        r"re:.*conv1d$",
-        r"re:.*in_proj_a$",
-        r"re:.*in_proj_b$",
-        r"re:.*in_proj_ba$",
-        r"re:.*\.fc$",
-    ]
+    source_dtype = "fp8"
 
     def __init__(self, config):
         super().__init__()
@@ -48,7 +35,34 @@ class Fp8ToInt8Config(QuantizationConfig):
         self._source_ignored = list(
             config.get("ignored_layers") or config.get("modules_to_not_convert") or []
         )
-        self.ignored_layers = self._source_ignored + self._floating_layers
+        self.source_ignored_layers = list(self._source_ignored)
+        self.ignored_layers = list(self._source_ignored)
+        self._target_ignored = list(self._source_ignored)
+        self.recipe_id = "checkpoint"
+
+    def maybe_update_config(self, model_name, hf_config=None, revision=None):
+        from vllm_sail.model_executor.layers.quantization.online_conversion.recipe import (
+            select_recipe,
+            target_exclusions,
+        )
+
+        if self.online_quantization_config is not None:
+            raise ValueError(
+                "SAIL conversion cannot be composed with another online quantizer"
+            )
+        if self.target_dtype == "bf16":
+            return
+        recipe = select_recipe(model_name, hf_config, self.source_dtype)
+        if recipe is None:
+            self.recipe_id = "checkpoint"
+            self._target_ignored = list(self._source_ignored)
+        else:
+            self.recipe_id = recipe["id"]
+            self._target_ignored = target_exclusions(recipe)
+        self.ignored_layers = list(self._target_ignored)
+        logger.info(
+            "SAIL online INT8: source=%s recipe=%s", self.source_dtype, self.recipe_id
+        )
 
     @classmethod
     def get_name(cls):
@@ -88,38 +102,44 @@ class Fp8ToInt8Config(QuantizationConfig):
         return selected
 
     def apply_vllm_mapper(self, hf_to_vllm_mapper):
-        plain = [p for p in self._source_ignored if not p.startswith("re:")]
-        regex = [p for p in self._source_ignored if p.startswith("re:")]
-        self.ignored_layers = (
-            hf_to_vllm_mapper.apply_list(plain) + regex + self._floating_layers
-        )
+        def mapped(entries):
+            plain = [p for p in entries if not p.startswith("re:")]
+            regex = [p for p in entries if p.startswith("re:")]
+            return hf_to_vllm_mapper.apply_list(plain) + regex
+
+        self.source_ignored_layers = mapped(self._source_ignored)
+        self.ignored_layers = mapped(self._target_ignored)
 
     def get_quant_method(self, layer, prefix):
         if not current_platform.is_ppu():
-            raise ValueError("FP8 checkpoint conversion is supported only on PPU")
+            raise ValueError("Online checkpoint conversion is supported only on PPU")
         if isinstance(layer, VocabParallelEmbedding):
             return None
         if not isinstance(layer, LinearBase | RoutedExperts):
             return None
-        ignored = is_ignored(
-            prefix, self.ignored_layers, getattr(self, "packed_modules_mapping", {})
+        mapping = getattr(self, "packed_modules_mapping", {})
+        source_float = self.source_dtype == "bf16" or is_ignored(
+            prefix, self.source_ignored_layers, mapping
         )
+        target_float = self.target_dtype == "bf16" or is_ignored(
+            prefix, self.ignored_layers, mapping
+        )
+        source = "bf16" if source_float else "fp8"
+        target = "bf16" if target_float else "int8"
         if isinstance(layer, LinearBase):
-            if ignored:
+            if source_float and target_float:
                 return CheckedUnquantizedLinearMethod()
             from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
                 Fp8ConversionLinearMethod,
             )
 
-            return Fp8ConversionLinearMethod(self.target_dtype)
-        if ignored:
+            return Fp8ConversionLinearMethod(target, source_dtype=source)
+        if source_float and target_float:
             return CheckedUnquantizedMoEMethod(layer.moe_config)
         from vllm_sail.model_executor.layers.quantization.online_conversion.moe import (
             Fp8ToBf16MoEMethod,
             Fp8ToInt8MoEMethod,
         )
 
-        method = (
-            Fp8ToInt8MoEMethod if self.target_dtype == "int8" else Fp8ToBf16MoEMethod
-        )
-        return method(layer)
+        method = Fp8ToInt8MoEMethod if target == "int8" else Fp8ToBf16MoEMethod
+        return method(layer, source_dtype=source)

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""FP8 source loading for the vLLM 0.31 RoutedExperts interface."""
+"""FP8/BF16 source loading for the vLLM 0.31 RoutedExperts interface."""
 
 import torch
 from torch.nn import Parameter
@@ -24,6 +24,8 @@ class Fp8SourceMoE:
     """Shared source allocation; target kernels see only converted parameters."""
 
     supports_pre_processed_weights = False
+    source_dtype = "fp8"
+    converted = False
 
     @property
     def supports_eplb(self):
@@ -40,7 +42,11 @@ class Fp8SourceMoE:
     ):
         if params_dtype != torch.bfloat16:
             raise ValueError("FP8 conversion requires --dtype bfloat16")
-        if self.moe.tp_size > 1 and intermediate_size_per_partition % 128:
+        if (
+            self.source_dtype == "fp8"
+            and self.moe.tp_size > 1
+            and intermediate_size_per_partition % 128
+        ):
             raise ValueError("FP8 MoE TP shards must align to 128 elements")
         # Padding requires a separate source-grid mapping; do not read padded
         # FP8 cells or scales that the checkpoint loader never populated.
@@ -51,7 +57,7 @@ class Fp8SourceMoE:
             raise ValueError("FP8 conversion does not support padded MoE dimensions")
         layer.num_experts = num_experts
         layer.orig_dtype = params_dtype
-        layer.weight_block_size = [128, 128]
+        layer.weight_block_size = [128, 128] if self.source_dtype == "fp8" else None
         shards = 2 if self.moe.is_act_and_mul else 1
         shapes = {
             "w13": (shards * intermediate_size_per_partition, hidden_size),
@@ -63,33 +69,38 @@ class Fp8SourceMoE:
                     num_experts,
                     rows,
                     cols,
-                    dtype=torch.float8_e4m3fn,
+                    dtype=torch.float8_e4m3fn
+                    if self.source_dtype == "fp8"
+                    else torch.bfloat16,
                 ),
                 requires_grad=False,
             )
             layer.register_parameter(f"{name}_weight", weight)
             set_weight_attrs(weight, extra_weight_attrs)
-            scale_rows = (
-                shards * ((intermediate_size_per_partition + 127) // 128)
-                if name == "w13"
-                else (rows + 127) // 128
-            )
-            scale = Parameter(
-                torch.full(
-                    (num_experts, scale_rows, (cols + 127) // 128),
-                    float("nan"),
-                    dtype=torch.float32,
-                ),
-                requires_grad=False,
-            )
-            layer.register_parameter(f"{name}_weight_scale_inv", scale)
-            set_weight_attrs(
-                scale,
-                {
-                    **extra_weight_attrs,
-                    "quant_method": FusedMoeWeightScaleSupported.BLOCK.value,
-                },
-            )
+            if self.source_dtype == "fp8":
+                scale_rows = (
+                    shards * ((intermediate_size_per_partition + 127) // 128)
+                    if name == "w13"
+                    else (rows + 127) // 128
+                )
+                scale = Parameter(
+                    torch.full(
+                        (num_experts, scale_rows, (cols + 127) // 128),
+                        float("nan"),
+                        dtype=torch.float32,
+                    ),
+                    requires_grad=False,
+                )
+                layer.register_parameter(f"{name}_weight_scale_inv", scale)
+                set_weight_attrs(
+                    scale,
+                    {
+                        **extra_weight_attrs,
+                        "quant_method": FusedMoeWeightScaleSupported.BLOCK.value,
+                    },
+                )
+            else:
+                layer.register_parameter(f"{name}_weight_scale_inv", None)
             if self.moe.has_bias:
                 bias = Parameter(
                     torch.zeros(
@@ -103,7 +114,7 @@ class Fp8SourceMoE:
                 set_weight_attrs(bias, extra_weight_attrs)
         layer.w13_input_scale = None
         layer.w2_input_scale = None
-        guard_weights(layer, ("w13_weight", "w2_weight"), torch.float8_e4m3fn)
+        guard_weights(layer, ("w13_weight", "w2_weight"), layer.w13_weight.dtype)
 
     def _convert(self, layer, *, to_int8):
         group = None
@@ -137,11 +148,15 @@ class Fp8SourceMoE:
                 for shard, (weight, scale) in enumerate(
                     zip(
                         source[expert].chunk(shards, 0),
-                        scales[expert].chunk(shards, 0),
+                        scales[expert].chunk(shards, 0)
+                        if scales is not None
+                        else [None] * shards,
                         strict=True,
                     )
                 ):
-                    decoded = dequantize_fp8(weight, scale)
+                    decoded = (
+                        dequantize_fp8(weight, scale) if scale is not None else weight
+                    )
                     dest = target[expert].chunk(shards, 0)[shard]
                     if to_int8:
                         q, s = quantize_int8(
@@ -165,15 +180,18 @@ class Fp8SourceMoE:
     def _release_scales(self, layer):
         replace_parameter(layer, "w13_weight_scale_inv", None)
         replace_parameter(layer, "w2_weight_scale_inv", None)
+        self.converted = True
 
 
 class Fp8ToBf16MoEMethod(Fp8SourceMoE, UnquantizedFusedMoEMethod):
-    def __init__(self, layer):
+    def __init__(self, layer, source_dtype="fp8"):
         super().__init__(layer.moe_config)
+        self.source_dtype = source_dtype
+        self.converted = False
         self.supports_pre_processed_weights = False
 
     def process_weights_after_loading(self, layer):
-        if layer.w13_weight_scale_inv is None:
+        if self.converted:
             return
         self._convert(layer, to_int8=False)
         super().process_weights_after_loading(layer)
@@ -181,8 +199,10 @@ class Fp8ToBf16MoEMethod(Fp8SourceMoE, UnquantizedFusedMoEMethod):
 
 
 class Fp8ToInt8MoEMethod(Fp8SourceMoE, FusedMoEMethodBase):
-    def __init__(self, layer):
+    def __init__(self, layer, source_dtype="fp8"):
         super().__init__(layer.moe_config)
+        self.source_dtype = source_dtype
+        self.converted = False
         # Resolve after plugin installation, never capture an unpatched oracle
         # callable while quantization configs are being registered.
         from vllm.model_executor.layers.fused_moe.oracle import int8 as oracle
@@ -194,7 +214,7 @@ class Fp8ToInt8MoEMethod(Fp8SourceMoE, FusedMoEMethodBase):
         )
 
     def process_weights_after_loading(self, layer):
-        if layer.w13_weight_scale_inv is None:
+        if self.converted:
             return
         from vllm.model_executor.layers.fused_moe.oracle import int8 as oracle
 

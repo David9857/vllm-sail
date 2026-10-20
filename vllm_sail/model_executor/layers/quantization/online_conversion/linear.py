@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Load FP8 source parameters, then delegate execution to existing kernels."""
+"""Load FP8 or BF16 source parameters and delegate target execution."""
 
 import torch
 from torch.nn import Parameter
@@ -12,8 +12,10 @@ from .quant_utils import dequantize_fp8, quantize_int8
 
 
 class Fp8ConversionLinearMethod(LinearMethodBase):
-    def __init__(self, target_dtype):
+    def __init__(self, target_dtype, source_dtype="fp8"):
         self.target_dtype = target_dtype
+        self.source_dtype = source_dtype
+        self.converted = False
         self.kernel = None
         self.unquantized = UnquantizedLinearMethod()
 
@@ -29,28 +31,38 @@ class Fp8ConversionLinearMethod(LinearMethodBase):
     ):
         if params_dtype != torch.bfloat16:
             raise ValueError("FP8 conversion requires --dtype bfloat16")
-        if any(n % 128 for n in output_partition_sizes[:-1]):
+        if self.source_dtype == "fp8" and any(
+            n % 128 for n in output_partition_sizes[:-1]
+        ):
             raise ValueError("Fused FP8 output boundaries must align to 128 rows")
-        if input_size != input_size_per_partition and input_size_per_partition % 128:
+        if (
+            self.source_dtype == "fp8"
+            and input_size != input_size_per_partition
+            and input_size_per_partition % 128
+        ):
             raise ValueError("FP8 input TP shards must align to 128 columns")
         if input_size % input_size_per_partition:
             raise ValueError("FP8 input TP shards must evenly divide the input")
-        if output_size != sum(output_partition_sizes) and any(
-            n % 128 for n in output_partition_sizes
+        if (
+            self.source_dtype == "fp8"
+            and output_size != sum(output_partition_sizes)
+            and any(n % 128 for n in output_partition_sizes)
         ):
             raise ValueError("FP8 output TP shards must align to 128 rows")
         layer.logical_widths = output_partition_sizes
         layer.input_size_per_partition = input_size_per_partition
         layer.output_size_per_partition = sum(output_partition_sizes)
         layer.orig_dtype = params_dtype
-        layer.weight_block_size = [128, 128]
+        layer.weight_block_size = [128, 128] if self.source_dtype == "fp8" else None
         self.input_sharded = input_size != input_size_per_partition
         self.input_tp_size = input_size // input_size_per_partition
         weight = Parameter(
             torch.empty(
                 sum(output_partition_sizes),
                 input_size_per_partition,
-                dtype=torch.float8_e4m3fn,
+                dtype=torch.float8_e4m3fn
+                if self.source_dtype == "fp8"
+                else torch.bfloat16,
             ),
             requires_grad=False,
         )
@@ -58,7 +70,10 @@ class Fp8ConversionLinearMethod(LinearMethodBase):
             weight, {"input_dim": 1, "output_dim": 0, **extra_weight_attrs}
         )
         layer.register_parameter("weight", weight)
-        guard_weights(layer, ("weight",), torch.float8_e4m3fn)
+        guard_weights(layer, ("weight",), weight.dtype)
+        if self.source_dtype == "bf16":
+            layer.register_parameter("weight_scale_inv", None)
+            return
         scale = BlockQuantScaleParameter(
             data=torch.full(
                 (
@@ -75,9 +90,13 @@ class Fp8ConversionLinearMethod(LinearMethodBase):
         layer.register_parameter("weight_scale_inv", scale)
 
     def process_weights_after_loading(self, layer):
-        if layer.weight_scale_inv is None:
+        if self.converted:
             return
-        weight = dequantize_fp8(layer.weight, layer.weight_scale_inv)
+        weight = (
+            dequantize_fp8(layer.weight, layer.weight_scale_inv)
+            if self.source_dtype == "fp8"
+            else layer.weight.data
+        )
         if self.target_dtype == "int8":
             from vllm.model_executor.kernels.linear.scaled_mm.ScaledMMLinearKernel import (
                 Int8ScaledMMLinearLayerConfig,
@@ -120,6 +139,7 @@ class Fp8ConversionLinearMethod(LinearMethodBase):
         else:
             self.unquantized.process_weights_after_loading(layer)
         replace_parameter(layer, "weight_scale_inv", None)
+        self.converted = True
 
     def apply(self, layer, x, bias=None):
         if self.target_dtype == "int8":

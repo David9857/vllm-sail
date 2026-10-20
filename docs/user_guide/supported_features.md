@@ -75,11 +75,11 @@ tests do not establish device correctness or full-model support.
 
 ## Model integration
 
-Loading-time `fp8-to-int8` and `fp8-to-bf16` paths are described in
-[FP8 conversion](online_quantization.md). They accept E4M3 128x128 block
-checkpoints with BF16 activations and reuse existing Dense/MoE backends.
-Device and model qualification is required; BF16-source automatic INT8
-quantization is not provided without an explicit recipe contract.
+Loading-time `fp8-to-int8`, `bf16-to-int8`, and `fp8-to-bf16` paths are described in
+[Online quantization](online_quantization.md). They accept E4M3 128x128 block FP8
+or unquantized BF16 checkpoints and reuse existing Dense/MoE backends. Model
+recipes select target precision; fallback uses checkpoint policy for FP8 and
+the bundled default recipe for BF16. Device and model qualification is required.
 
 | Model family or path | PPU integration |
 | --- | --- |

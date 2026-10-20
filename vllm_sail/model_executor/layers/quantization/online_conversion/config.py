@@ -29,6 +29,12 @@ def validate_fp8_config(config: Mapping[str, Any]) -> None:
             or any(not isinstance(entry, str) for entry in entries)
         ):
             raise ValueError(f"{key} must be a list of module names")
+    if (
+        config.get("ignored_layers") is not None
+        and config.get("modules_to_not_convert") is not None
+        and set(config["ignored_layers"]) != set(config["modules_to_not_convert"])
+    ):
+        raise ValueError("Conflicting checkpoint exclusion metadata")
     # Legacy mix_layers selects storage, not just execution precision. Without
     # per-layer source metadata it can silently load FP8 values as BF16.
     if config.get("mix_layers"):
