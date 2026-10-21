@@ -121,9 +121,9 @@ def test_public_registry_registers_once_only_on_ppu(monkeypatch, is_ppu):
         {"fmt": "e5m2"},
         {"activation_scheme": "static"},
         {"scales_path": "cache.safetensors"},
-        {"mix_layers": [0]},
+        {"mix_layers": [-1]},
+        {"mix_layer": [True]},
         {"ignored_layers": "not-a-list"},
-        {"ignored_layers": ["a"], "modules_to_not_convert": ["b"]},
     ],
 )
 def test_invalid_checkpoint_metadata(changes):
@@ -279,3 +279,92 @@ def test_floating_safety_patterns_do_not_match_fused_gate_up():
     assert any(
         re.search(p[3:], "model.layers.0.linear_attn.in_proj_ba") for p in patterns
     )
+
+
+@pytest.mark.parametrize("key", ["mix_layer", "mix_layers"])
+def test_source_mixed_metadata_is_valid(key):
+    config = {
+        "quant_method": "fp8",
+        "weight_block_size": [128, 128],
+        key: [0, 10],
+        "fmt": None,
+    }
+    validate_fp8_config(config)
+    from vllm_sail.model_executor.layers.quantization.online_conversion.selection import (
+        is_mixed_layer,
+    )
+
+    assert is_mixed_layer("model.layers.0.mlp.down_proj", config[key])
+    assert is_mixed_layer("layers.10.mlp.experts", config[key])
+    assert not is_mixed_layer("model.layers.1.mlp.down_proj", config[key])
+
+
+def test_legacy_recipe_selector_and_new_precedence():
+    from vllm_sail.model_executor.layers.quantization.online_conversion.recipe import (
+        select_recipe,
+    )
+
+    config = SimpleNamespace(ppu_quantization_recipe="_default")
+    assert select_recipe("renamed", config, "fp8")["id"] == "_default"
+    config.sail_quantization_recipe = "unknown"
+    with pytest.raises(ValueError, match="Unknown"):
+        select_recipe("renamed", config, "bf16")
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("is_ppu", [False, True])
+@pytest.mark.parametrize("dtype", ["auto", "float16"])
+def test_auto_dtype_preserves_explicit_choice(nested, is_ppu, dtype):
+    resolve = function(
+        "vllm_sail/patch/enhancement/online_quantization_dtype.py",
+        "get_and_verify_dtype",
+        {
+            "current_platform": SimpleNamespace(is_ppu=lambda: is_ppu),
+            "_upstream_get_dtype": lambda model_id, config, dtype, **kw: dtype,
+        },
+    )
+    config = SimpleNamespace(quantization_config={"quant_method": "fp8"})
+    if nested:
+        config = SimpleNamespace(text_config=config)
+    expected = "bfloat16" if is_ppu and dtype == "auto" else dtype
+    assert resolve("model", config, dtype, is_pooling_model=False) == expected
+
+
+@pytest.mark.parametrize("conversion", [False, True])
+def test_qwen_mixed_constructor_keeps_conversion_config(conversion):
+    # Exercise the actual model-constructor replacement, including its factory.
+    # A subclass inheriting this initializer takes the same route.
+    config = SimpleNamespace(
+        quant_config=SimpleNamespace(handles_source_mixed_layers=conversion),
+        model_config=SimpleNamespace(hf_text_config=object()),
+    )
+    calls = []
+
+    def decoder(**kwargs):
+        calls.append(kwargs)
+
+    def upstream(self, *, vllm_config, prefix, decoder_layer_type):
+        for index in (0, 1):
+            decoder_layer_type(vllm_config=vllm_config, prefix=f"model.layers.{index}")
+
+    init = function(
+        "vllm_sail/patch/enhancement/models/qwen3_moe.py",
+        "model_init",
+        {
+            "_mix_layers": lambda _: [0],
+            "_upstream_model_init": upstream,
+            "extract_layer_index": lambda prefix: int(prefix.rsplit(".", 1)[1]),
+            "Qwen3MoeDecoderLayer": decoder,
+            "VllmConfig": object,
+        },
+    )
+    init(object(), vllm_config=config, decoder_layer_type=decoder)
+    assert len(calls) == 2
+    if conversion:
+        assert all("quant_config" not in call for call in calls)
+        assert all(
+            call["vllm_config"].quant_config is config.quant_config for call in calls
+        )
+    else:
+        assert calls[0]["quant_config"] is None
+        assert calls[1]["quant_config"] is config.quant_config

@@ -108,6 +108,7 @@ def test_moe_conversion_keeps_expert_and_gate_scale_grids(to_int8, gated):
         },
     )
     layer = torch.nn.Module()
+    layer.orig_dtype = torch.bfloat16
     shards = 2 if gated else 1
     layer.w13_weight = torch.nn.Parameter(
         torch.ones((2, shards * 65, 128)).to(torch.float8_e4m3fn), requires_grad=False
@@ -184,3 +185,101 @@ def test_loader_checks_before_cast_and_forwards_moe_arguments():
         param, torch.ones_like(param), "w1", expert_id=3, return_success=True
     )
     assert calls == [(("w1",), {"expert_id": 3, "return_success": True})]
+
+
+@pytest.mark.parametrize("to_int8", [False, True])
+@pytest.mark.parametrize("source_dtype", ["fp8", "bf16"])
+def test_moe_padding_does_not_enter_decode_or_quantization(to_int8, source_dtype):
+    from types import SimpleNamespace
+
+    from tests.support.source import function
+
+    convert = function(
+        "vllm_sail/model_executor/layers/quantization/online_conversion/moe.py",
+        "Fp8SourceMoE._convert",
+        {
+            "torch": torch,
+            "Parameter": torch.nn.Parameter,
+            "dequantize_fp8": dequantize_fp8,
+            "quantize_int8": quantize_int8,
+            "replace_parameter": lambda layer, name, value: setattr(layer, name, value),
+        },
+    )
+    layer = torch.nn.Module()
+    layer.orig_dtype = torch.bfloat16
+    hidden, intermediate, padded = 129, 65, 256
+    references = {}
+    for name in ("w13", "w2"):
+        count = 2 if name == "w13" else 1
+        rows, cols = (intermediate, hidden) if name == "w13" else (hidden, intermediate)
+        full = torch.full(
+            (2, count * padded, padded), float("nan"), dtype=torch.bfloat16
+        )
+        scale = (
+            torch.full((2, count * 2, 2), float("nan"))
+            if source_dtype == "fp8"
+            else None
+        )
+        references[name] = []
+        for e in range(2):
+            parts = []
+            for shard in range(count):
+                values = torch.full(
+                    (rows, cols), float(e + shard + 1), dtype=torch.bfloat16
+                )
+                full[e, shard * padded : shard * padded + rows, :cols] = values
+                if scale is not None:
+                    scale[
+                        e,
+                        shard * 2 : shard * 2 + (rows + 127) // 128,
+                        : (cols + 127) // 128,
+                    ] = 2
+                    values = values * 2
+                parts.append(values)
+            references[name].append(parts)
+        if source_dtype == "fp8":
+            full = full.to(torch.float8_e4m3fn)
+        setattr(layer, name + "_weight", full)
+        setattr(layer, name + "_weight_scale_inv", scale)
+    convert(
+        SimpleNamespace(
+            moe=SimpleNamespace(tp_size=1, is_act_and_mul=True),
+            source_hidden_size=hidden,
+            source_intermediate_size=intermediate,
+        ),
+        layer,
+        to_int8=to_int8,
+    )
+    for name in ("w13", "w2"):
+        for expert, parts in enumerate(references[name]):
+            for shard, expected in enumerate(parts):
+                actual = getattr(layer, name + "_weight")[expert].chunk(len(parts), 0)[
+                    shard
+                ]
+                rows, cols = expected.shape
+                if to_int8:
+                    expected, scales = quantize_int8(expected)
+                    actual_scales = getattr(layer, name + "_weight_scale")[
+                        expert
+                    ].chunk(len(parts), 0)[shard]
+                    assert torch.equal(actual_scales[:rows], scales)
+                assert torch.equal(actual[:rows, :cols], expected)
+                assert not torch.count_nonzero(actual[rows:])
+                assert not torch.count_nonzero(actual[:, cols:])
+
+
+def test_flattened_parallel_axes_reduce_the_same_full_row_maximum(monkeypatch):
+    full = torch.tensor([[1, 2, 3, 127]], dtype=torch.bfloat16)
+    expected_q, expected_scale = quantize_int8(full)
+    groups = (object(), object())
+    visited = []
+
+    def reduce(maxima, op, group):
+        visited.append(group)
+        maxima.fill_(2 if group is groups[0] else 127)
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", reduce)
+    actual_q, actual_scale = quantize_int8(full[:, :1], tp_group=groups)
+    assert visited == list(groups)
+    assert torch.equal(actual_q, expected_q[:, :1])
+    assert torch.equal(actual_scale, expected_scale)

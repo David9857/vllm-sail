@@ -19,6 +19,7 @@ from vllm_sail.model_executor.layers.quantization.online_conversion.loading impo
 )
 from vllm_sail.model_executor.layers.quantization.online_conversion.selection import (
     is_ignored,
+    is_mixed_layer,
 )
 
 logger = init_logger(__name__)
@@ -27,11 +28,14 @@ logger = init_logger(__name__)
 class Fp8ToInt8Config(QuantizationConfig):
     target_dtype = "int8"
     source_dtype = "fp8"
+    handles_source_mixed_layers = True
 
     def __init__(self, config):
         super().__init__()
         validate_fp8_config(config)
         self.weight_block_size = [128, 128]
+        self.source_mix_layer = list(config.get("mix_layer") or [])
+        self.source_mix_layers = list(config.get("mix_layers") or [])
         self._source_ignored = list(
             config.get("ignored_layers") or config.get("modules_to_not_convert") or []
         )
@@ -70,7 +74,7 @@ class Fp8ToInt8Config(QuantizationConfig):
 
     @classmethod
     def get_supported_act_dtypes(cls):
-        return [torch.bfloat16]
+        return [torch.bfloat16, torch.float16]
 
     @classmethod
     def get_min_capability(cls):
@@ -78,7 +82,7 @@ class Fp8ToInt8Config(QuantizationConfig):
 
     @classmethod
     def get_config_filenames(cls):
-        return []
+        return ["int8_quant_config.json"]
 
     @classmethod
     def from_config(cls, config):
@@ -121,9 +125,21 @@ class Fp8ToInt8Config(QuantizationConfig):
         source_float = self.source_dtype == "bf16" or is_ignored(
             prefix, self.source_ignored_layers, mapping
         )
+        # Singular metadata describes whole blocks in the model constructor;
+        # plural metadata historically exempts Linear modules only.
+        source_float = (
+            source_float
+            or is_mixed_layer(prefix, getattr(self, "source_mix_layer", []))
+            or (
+                isinstance(layer, LinearBase)
+                and is_mixed_layer(prefix, getattr(self, "source_mix_layers", []))
+            )
+        )
         target_float = self.target_dtype == "bf16" or is_ignored(
             prefix, self.ignored_layers, mapping
         )
+        if self.recipe_id == "checkpoint":
+            target_float = target_float or source_float
         source = "bf16" if source_float else "fp8"
         target = "bf16" if target_float else "int8"
         if isinstance(layer, LinearBase):

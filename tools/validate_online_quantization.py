@@ -20,7 +20,9 @@ def worker_snapshot(worker):
     records = {}
     model = worker.model_runner.model
     for name, param in model.named_parameters():
-        if param.dtype == torch.int8 or name.endswith("weight_scale"):
+        if param.dtype == torch.int8 or name.endswith(
+            ("weight", "weight_scale", "bias")
+        ):
             tensor = param.detach().cpu().contiguous()
             records[name] = {
                 "shape": list(tensor.shape),
@@ -149,9 +151,13 @@ def compare(args):
                         break
             if not equal:
                 differences.append({"id": key, "field": field})
-    weights_equal = [w["weights"] for w in left["workers"]] == [
-        w["weights"] for w in right["workers"]
-    ]
+    reference_weights = [w["weights"] for w in left["workers"]]
+    candidate_weights = [w["weights"] for w in right["workers"]]
+    weights_equal = (
+        bool(reference_weights)
+        and all(reference_weights)
+        and reference_weights == candidate_weights
+    )
     result = {
         "requests": len(references),
         "generation_differences": differences,
@@ -180,7 +186,9 @@ def main():
     diff = sub.add_parser("compare")
     diff.add_argument("--reference", type=Path, required=True)
     diff.add_argument("--candidate", type=Path, required=True)
-    diff.add_argument("--require-weight-match", action="store_true")
+    diff.add_argument(
+        "--require-weight-match", action=argparse.BooleanOptionalAction, default=True
+    )
     diff.add_argument("--logprob-atol", type=float, default=1e-3)
     for command in (capture, diff):
         command.add_argument("--output", type=Path, required=True)

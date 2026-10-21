@@ -38,9 +38,11 @@ def quantize_int8(
         raise ValueError("Cannot quantize non-finite weights")
     maxima = values.abs().amax(dim=1, keepdim=True)
     if tp_group is not None:
-        torch.distributed.all_reduce(
-            maxima, op=torch.distributed.ReduceOp.MAX, group=tp_group
-        )
+        groups = tp_group if isinstance(tp_group, tuple) else (tp_group,)
+        for group in groups:
+            torch.distributed.all_reduce(
+                maxima, op=torch.distributed.ReduceOp.MAX, group=group
+            )
     scales = (maxima / 127.0).clamp_min(torch.finfo(torch.float32).eps)
     quantized = (values / scales).round().clamp(-127, 127).to(torch.int8)
     return quantized, scales

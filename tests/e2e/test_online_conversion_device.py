@@ -31,8 +31,12 @@ def runtime(monkeypatch):
     "source,target", [("fp8", "bf16"), ("fp8", "int8"), ("bf16", "int8")]
 )
 @pytest.mark.parametrize("bias", [False, True])
-def test_dense_conversion_forward_and_idempotency(runtime, source, target, bias):
+@pytest.mark.parametrize("activation_dtype", ["bfloat16", "float16"])
+def test_dense_conversion_forward_and_idempotency(
+    runtime, source, target, bias, activation_dtype
+):
     torch = runtime
+    dtype = getattr(torch, activation_dtype)
     from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
         Fp8ConversionLinearMethod,
     )
@@ -45,7 +49,7 @@ def test_dense_conversion_forward_and_idempotency(runtime, source, target, bias)
     with torch.device("cuda"):
         layer = torch.nn.Module()
         method = Fp8ConversionLinearMethod(target, source_dtype=source)
-        method.create_weights(layer, 256, [128, 128], 256, 256, torch.bfloat16)
+        method.create_weights(layer, 256, [128, 128], 256, 256, dtype)
         layer.weight.data.copy_(torch.randn(256, 256).to(layer.weight.dtype))
         if source == "fp8":
             layer.weight_scale_inv.data.fill_(0.03125)
@@ -66,10 +70,10 @@ def test_dense_conversion_forward_and_idempotency(runtime, source, target, bias)
                 expected_q if method.kernel.weight_RowMajor else expected_q.t()
             ).float() * expected_scale
         else:
-            assert torch.equal(layer.weight, decoded)
+            assert torch.equal(layer.weight, decoded.to(dtype))
             reference_weight = decoded.float()
-        x = torch.randn(2, 7, 256, dtype=torch.bfloat16)
-        b = torch.randn(256, dtype=torch.bfloat16) if bias else None
+        x = torch.randn(2, 7, 256, dtype=dtype)
+        b = torch.randn(256, dtype=dtype) if bias else None
         actual = method.apply(layer, x, b)
         # W8A8 adds dynamic activation quantization; compare against decoded
         # weight matmul with a bounded relative norm error, not exact outputs.

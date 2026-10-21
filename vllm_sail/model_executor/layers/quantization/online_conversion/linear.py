@@ -29,8 +29,8 @@ class Fp8ConversionLinearMethod(LinearMethodBase):
         params_dtype,
         **extra_weight_attrs,
     ):
-        if params_dtype != torch.bfloat16:
-            raise ValueError("FP8 conversion requires --dtype bfloat16")
+        if params_dtype not in (torch.bfloat16, torch.float16):
+            raise ValueError("Conversion requires BF16 or FP16 activations")
         if self.source_dtype == "fp8" and any(
             n % 128 for n in output_partition_sizes[:-1]
         ):
@@ -132,6 +132,8 @@ class Fp8ConversionLinearMethod(LinearMethodBase):
                     "azp_adj",
                 ],
             )
+        if self.target_dtype == "bf16":
+            weight = weight.to(layer.orig_dtype)
         replace_parameter(layer, "weight", weight)
         layer.weight_block_size = None
         if self.kernel is not None:

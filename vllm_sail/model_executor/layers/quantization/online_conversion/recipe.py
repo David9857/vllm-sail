@@ -51,6 +51,8 @@ def select_recipe(model_name, hf_config, source_dtype):
     supplied by a recipe, apply equally to automatic and explicit selection.
     """
     requested = getattr(hf_config, "sail_quantization_recipe", None)
+    if requested is None:
+        requested = getattr(hf_config, "ppu_quantization_recipe", None)
     recipes = [
         validate_recipe(json.loads(p.read_text()))
         for p in sorted(_RECIPE_DIR.glob("*.json"))

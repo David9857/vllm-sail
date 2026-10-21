@@ -18,7 +18,7 @@ def validate_fp8_config(config: Mapping[str, Any]) -> None:
         raise ValueError("FP8 conversion requires weight_block_size=[128, 128]")
     if config.get("activation_scheme", "dynamic") != "dynamic":
         raise ValueError("FP8 conversion supports only dynamic activation_scheme")
-    if str(config.get("fmt", "e4m3")).lower() != "e4m3":
+    if config.get("fmt") is not None and str(config["fmt"]).lower() != "e4m3":
         raise ValueError("FP8 conversion supports only E4M3 weights")
     if config.get("scales_path"):
         raise ValueError("Cached INT8 scales are not supported by FP8 conversion")
@@ -29,16 +29,13 @@ def validate_fp8_config(config: Mapping[str, Any]) -> None:
             or any(not isinstance(entry, str) for entry in entries)
         ):
             raise ValueError(f"{key} must be a list of module names")
-    if (
-        config.get("ignored_layers") is not None
-        and config.get("modules_to_not_convert") is not None
-        and set(config["ignored_layers"]) != set(config["modules_to_not_convert"])
-    ):
-        raise ValueError("Conflicting checkpoint exclusion metadata")
-    # Legacy mix_layers selects storage, not just execution precision. Without
-    # per-layer source metadata it can silently load FP8 values as BF16.
-    if config.get("mix_layers"):
-        raise ValueError("mix_layers requires explicit per-layer source metadata")
+    for key in ("mix_layer", "mix_layers"):
+        entries = config.get(key)
+        if entries is not None and (
+            not isinstance(entries, list)
+            or any(type(entry) is not int or entry < 0 for entry in entries)
+        ):
+            raise ValueError(f"{key} must be a list of nonnegative layer indices")
 
 
 def select_conversion(

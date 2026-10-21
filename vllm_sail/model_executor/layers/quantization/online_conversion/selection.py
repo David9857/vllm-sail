@@ -29,3 +29,9 @@ def is_ignored(prefix, entries, fused_mapping):
             )
         return bool(flags) and all(flags)
     return False
+
+
+def is_mixed_layer(prefix, indices):
+    """Match a transformer block without confusing layer 1 with layer 10."""
+    match = re.search(r"(?:^|\.)layers\.(\d+)\.", prefix)
+    return match is not None and int(match.group(1)) in indices

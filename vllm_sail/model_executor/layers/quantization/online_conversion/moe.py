@@ -27,10 +27,6 @@ class Fp8SourceMoE:
     source_dtype = "fp8"
     converted = False
 
-    @property
-    def supports_eplb(self):
-        return False
-
     def create_weights(
         self,
         layer,
@@ -40,21 +36,18 @@ class Fp8SourceMoE:
         params_dtype,
         **extra_weight_attrs,
     ):
-        if params_dtype != torch.bfloat16:
-            raise ValueError("FP8 conversion requires --dtype bfloat16")
+        if params_dtype not in (torch.bfloat16, torch.float16):
+            raise ValueError("Conversion requires BF16 or FP16 activations")
         if (
             self.source_dtype == "fp8"
             and self.moe.tp_size > 1
-            and intermediate_size_per_partition % 128
+            and self.moe.intermediate_size_per_partition_unpadded % 128
         ):
             raise ValueError("FP8 MoE TP shards must align to 128 elements")
-        # Padding requires a separate source-grid mapping; do not read padded
-        # FP8 cells or scales that the checkpoint loader never populated.
-        if hidden_size != self.moe.hidden_dim_unpadded or (
-            intermediate_size_per_partition
-            != self.moe.intermediate_size_per_partition_unpadded
-        ):
-            raise ValueError("FP8 conversion does not support padded MoE dimensions")
+        self.source_hidden_size = self.moe.hidden_dim_unpadded
+        self.source_intermediate_size = (
+            self.moe.intermediate_size_per_partition_unpadded
+        )
         layer.num_experts = num_experts
         layer.orig_dtype = params_dtype
         layer.weight_block_size = [128, 128] if self.source_dtype == "fp8" else None
@@ -106,7 +99,7 @@ class Fp8SourceMoE:
                     torch.zeros(
                         num_experts,
                         rows,
-                        dtype=torch.bfloat16,
+                        dtype=params_dtype,
                     ),
                     requires_grad=False,
                 )
@@ -119,24 +112,30 @@ class Fp8SourceMoE:
     def _convert(self, layer, *, to_int8):
         group = None
         if to_int8 and self.moe.tp_size > 1:
-            from vllm.distributed import get_tp_group
+            from vllm.distributed import get_dp_group, get_pcp_group, get_tp_group
 
             tp = get_tp_group()
-            if tp.world_size != self.moe.tp_size:
-                raise ValueError(
-                    "FP8 INT8 conversion does not support flattened DP/PCP TP"
-                )
-            group = tp.device_group
+            groups = [tp]
+            if self.moe.dp_size > 1:
+                groups.append(get_dp_group())
+            if self.moe.pcp_size > 1:
+                groups.append(get_pcp_group())
+            size = 1
+            for axis in groups:
+                size *= axis.world_size
+            if size != self.moe.tp_size:
+                raise ValueError("MoE input shards do not match TP/DP/PCP groups")
+            group = tuple(axis.device_group for axis in groups if axis.world_size > 1)
         for name in ("w13", "w2"):
             source = getattr(layer, f"{name}_weight")
             scales = getattr(layer, f"{name}_weight_scale_inv")
-            target = torch.empty_like(
-                source, dtype=torch.int8 if to_int8 else torch.bfloat16
+            target = torch.zeros_like(
+                source, dtype=torch.int8 if to_int8 else layer.orig_dtype
             )
             target_scales = (
-                torch.empty(
-                    *source.shape[:-1],
-                    1,
+                torch.full(
+                    (*source.shape[:-1], 1),
+                    1.0,  # Match offline target scale initialization for padded rows.
                     device=source.device,
                     dtype=torch.float32,
                 )
@@ -154,16 +153,35 @@ class Fp8SourceMoE:
                         strict=True,
                     )
                 ):
+                    # Decode only checkpoint cells, never unpopulated padding.
+                    hidden = getattr(
+                        self,
+                        "source_hidden_size",
+                        weight.shape[1] if name == "w13" else weight.shape[0],
+                    )
+                    intermediate = getattr(
+                        self,
+                        "source_intermediate_size",
+                        weight.shape[0] if name == "w13" else weight.shape[1],
+                    )
+                    rows, cols = (
+                        (intermediate, hidden)
+                        if name == "w13"
+                        else (hidden, intermediate)
+                    )
+                    weight = weight[:rows, :cols]
+                    if scale is not None:
+                        scale = scale[: (rows + 127) // 128, : (cols + 127) // 128]
                     decoded = (
                         dequantize_fp8(weight, scale) if scale is not None else weight
                     )
-                    dest = target[expert].chunk(shards, 0)[shard]
+                    dest = target[expert].chunk(shards, 0)[shard][:rows, :cols]
                     if to_int8:
                         q, s = quantize_int8(
                             decoded, tp_group=group if name == "w2" else None
                         )
                         dest.copy_(q)
-                        target_scales[expert].chunk(shards, 0)[shard].copy_(s)
+                        target_scales[expert].chunk(shards, 0)[shard][:rows].copy_(s)
                     else:
                         dest.copy_(decoded)
             replace_parameter(layer, f"{name}_weight", target)

@@ -40,6 +40,11 @@ def test_report_checks_numerics_even_when_tokens_agree(tmp_path):
     )
     module.compare(args)
     assert json.loads(output.read_text())["generation_differences"] == []
+    artifact["workers"][0]["weights"]["proj.weight"] = "different-digest"
+    candidate.write_text(json.dumps(artifact))
+    with pytest.raises(SystemExit):
+        module.compare(args)
+    artifact["workers"][0]["weights"]["proj.weight"] = "digest"
     record["logprobs"][0]["3"] = -0.2
     candidate.write_text(json.dumps(artifact))
     with pytest.raises(SystemExit):

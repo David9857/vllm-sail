@@ -23,6 +23,10 @@ class Bf16ToInt8Config(Fp8ToInt8Config):
         return "bf16-to-int8"
 
     @classmethod
+    def get_config_filenames(cls):
+        return []
+
+    @classmethod
     def from_config(cls, config):
         raise ValueError("bf16-to-int8 requires an unquantized BF16 checkpoint")
 

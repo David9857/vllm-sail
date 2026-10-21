@@ -50,7 +50,9 @@ vllm serve /models/renamed --quantization bf16-to-int8 --dtype bfloat16 \
   --hf-overrides '{"sail_quantization_recipe":"qwen3_8_27b"}'
 ```
 
-Unknown IDs fail; paths and executable recipes are not accepted. Recipe-provided
+The legacy `ppu_quantization_recipe` override remains accepted; an explicit
+`sail_quantization_recipe` takes precedence. Unknown IDs fail; paths and executable
+recipes are not accepted. Recipe-provided
 structural constraints apply to both automatic and explicit selection. Mixed-layer
 indices must fit the model depth. `_default` can also be explicitly selected.
 Logs report the source dtype and selected recipe ID, or `checkpoint` for the FP8
@@ -67,9 +69,15 @@ policy, not an assertion that every unknown architecture has been accuracy-teste
 Checkpoint exclusion names are mapped independently from recipe names through the
 model's weight mapper. Fused QKV/gate-up shards must agree on source storage and,
 separately, target precision. Conflicting fused selections fail before loading.
-Source `mix_layers` and cached `scales_path` remain unsupported because they do not
-provide an unambiguous supported source storage contract. Recipe `mix_layers` is a
-target policy and is supported.
+Checkpoint `mix_layer` describes floating whole blocks; checkpoint `mix_layers`
+retains the source fork's floating Linear-module selection. These source fields do
+not override a selected target recipe. Without a matching recipe, original
+floating modules remain floating. Recipe `mix_layers` independently selects target
+floating blocks. Cached `scales_path` is unsupported.
+
+`ignored_layers` takes precedence over `modules_to_not_convert` when nonempty,
+matching the source loader. Explicit `fmt: null` is treated as unspecified E4M3.
+The standalone `int8_quant_config.json` source metadata file is also accepted.
 
 ## Defaults and compatibility
 
@@ -86,21 +94,30 @@ If no load policy is set, an explicitly set `VLLM_SAIL_ENABLE_FP8_TO_INT8`
 Leaving it unset does not change the default. Composition with another upstream
 online quantizer is rejected.
 
+`--dtype auto` on PPU FP8 checkpoints resolves to BF16, including nested text
+metadata. Explicit BF16 and FP16 activation dtypes remain accepted. Source decoding
+and INT8 scale computation retain their fixed numerical precision regardless of
+activation dtype.
+
 ## Numerical and parallel contract
 
 FP8 decoding multiplies E4M3 values by 128-by-128 block scales in FP32, then rounds
 to BF16. INT8 conversion uses FP32 row absmax divided by 127, clamped to FP32 epsilon;
-weights are rounded and clipped to [-127, 127]. Compare qlean on the same device:
-CPU and PPU floating-point division can differ in the last bits.
+weights are rounded and clipped to [-127, 127]. For the same source, recipe and
+numerical implementation, online and offline INT8 weights and scales must match
+exactly. Compare corresponding logical tensors after undoing layout transformations;
+any mismatch must be investigated rather than accepted with a tolerance.
 
 FP8 fused boundaries and TP shards must align to 128-element blocks. BF16 sources
 do not inherit this FP8 alignment restriction. Independent MoE gate/up tail blocks
 retain independent scale grids. Input-dimension shards share row maxima through
-TP MAX reduction, so scales represent the full unsharded row.
+TP MAX reduction (and DP/PCP axes for flattened MoE shards), so scales represent
+the full unsharded row.
 
-MoE conversion rejects padded dimensions, flattened DP/PCP tensor parallel groups
-for INT8 conversion, and EPLB. Preprocessed weights and weight reload are not
-supported workflows. Restart with the source checkpoint to change conversion mode.
+MoE decoding and scale statistics exclude padding; target padding is zero-filled.
+BF16 MoE execution inherits the unquantized backend's EPLB capability. INT8 MoE
+inherits the target method's capability limits. Preprocessed source weights and
+weight reload are not supported workflows. Restart with the source checkpoint to change conversion mode.
 Backend-specific shape and execution restrictions still apply.
 
 Conversion avoids a full intermediate BF16 model, but still temporarily holds the
@@ -175,3 +192,9 @@ Artifacts record package versions, startup wall time, inference wall time and
 per-worker peak allocated/reserved device memory. Startup includes model loading,
 KV allocation and graph capture; its peak is not an isolated quantization-memory
 measurement. Keep backend and SAIL SDK identity with the run artifacts.
+
+Weight comparison is mandatory by default and uses exact hashes, including retained
+floating weights and biases. Empty weight captures fail this check. Use
+`--no-require-weight-match` only for generation diagnostics; that mode does not
+qualify online/offline quantization equivalence. Logprob tolerance applies only to
+inference outputs, never to captured weights or scales.

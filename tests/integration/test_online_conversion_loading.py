@@ -282,6 +282,7 @@ def test_source_and_target_selection_are_independent(source_float, target_float)
             "ignored_layers": [prefix] if source_float else [],
         }
     )
+    config.recipe_id = "explicit-test"
     config.ignored_layers = [prefix] if target_float else []
     method = config.get_quant_method(object.__new__(LinearBase), prefix)
     if source_float and target_float:
@@ -561,3 +562,204 @@ def test_real_routed_experts_checkpoint_loader(
             layer.w13_weight_scale[expert, 256:],
             torch.full((256, 1), factor * (expert + 2) / 127),
         )
+
+
+@pytest.mark.parametrize("key", ["mix_layer", "mix_layers"])
+@pytest.mark.parametrize("recipe", [None, "_default"])
+def test_source_mixed_linear_can_be_requantized(key, recipe):
+    from vllm.model_executor.layers.linear import LinearBase
+
+    from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
+    from vllm_sail.model_executor.layers.quantization.online_conversion.loading import (
+        CheckedUnquantizedLinearMethod,
+    )
+
+    config = Fp8ToInt8Config(
+        {"quant_method": "fp8", "weight_block_size": [128, 128], key: [1]}
+    )
+    config.maybe_update_config(
+        "renamed", SimpleNamespace(sail_quantization_recipe=recipe)
+    )
+    layer = object.__new__(LinearBase)
+    method = config.get_quant_method(layer, "model.layers.1.mlp.down_proj")
+    if recipe is None:
+        assert isinstance(method, CheckedUnquantizedLinearMethod)
+    else:
+        assert method.source_dtype == "bf16"
+        assert method.target_dtype == "int8"
+    assert (
+        config.get_quant_method(layer, "model.layers.10.mlp.down_proj").source_dtype
+        == "fp8"
+    )
+
+
+@pytest.mark.parametrize("activation_dtype", [torch.bfloat16, torch.float16])
+def test_fp8_decode_retained_layer_uses_activation_dtype(activation_dtype):
+    from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
+        Fp8ConversionLinearMethod,
+    )
+
+    layer = torch.nn.Module()
+    layer._cpu_skip_gemm_dispatch = True
+    method = Fp8ConversionLinearMethod("bf16")
+    method.create_weights(layer, 128, [128], 128, 128, activation_dtype)
+    layer.weight.data.fill_(1)
+    layer.weight_scale_inv.data.fill_(2)
+    method.process_weights_after_loading(layer)
+    assert layer.weight.dtype == activation_dtype
+    assert torch.equal(layer.weight, torch.full_like(layer.weight, 2))
+
+
+def test_standalone_source_quant_config_file(tmp_path, monkeypatch):
+    import json
+
+    from vllm.model_executor.model_loader import weight_utils
+
+    from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
+
+    (tmp_path / "int8_quant_config.json").write_text(
+        json.dumps(
+            {
+                "quant_method": "fp8",
+                "weight_block_size": [128, 128],
+                "mix_layers": [1],
+                "fmt": None,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        weight_utils, "get_quantization_config", lambda _: Fp8ToInt8Config
+    )
+    model = SimpleNamespace(
+        quantization="fp8-to-int8",
+        quantization_config=None,
+        hf_config=SimpleNamespace(),
+        hf_text_config=SimpleNamespace(),
+        hf_overrides={},
+        model=str(tmp_path),
+        revision=None,
+    )
+    result = weight_utils.get_quant_config(model, SimpleNamespace(download_dir=None))
+    assert result.source_mix_layers == [1]
+
+
+@pytest.mark.parametrize("key,expected", [("mix_layer", "bf16"), ("mix_layers", "fp8")])
+def test_singular_and_plural_moe_source_semantics(key, expected, monkeypatch):
+    from vllm.model_executor.layers.fused_moe import RoutedExperts
+
+    from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
+    from vllm_sail.model_executor.layers.quantization.online_conversion import moe
+
+    monkeypatch.setattr(
+        moe, "Fp8ToInt8MoEMethod", lambda layer, source_dtype: source_dtype
+    )
+    config = Fp8ToInt8Config(
+        {"quant_method": "fp8", "weight_block_size": [128, 128], key: [1]}
+    )
+    config.maybe_update_config(
+        "renamed", SimpleNamespace(sail_quantization_recipe="_default")
+    )
+    result = config.get_quant_method(
+        object.__new__(RoutedExperts), "model.layers.1.mlp.experts"
+    )
+    assert result == expected
+
+
+def test_bf16_moe_inherits_offline_eplb_capability():
+    from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
+        UnquantizedFusedMoEMethod,
+    )
+
+    from vllm_sail.model_executor.layers.quantization.online_conversion.moe import (
+        Fp8ToBf16MoEMethod,
+    )
+
+    assert Fp8ToBf16MoEMethod.supports_eplb is UnquantizedFusedMoEMethod.supports_eplb
+
+
+@pytest.mark.parametrize("inherited", [False, True])
+def test_real_qwen_base_constructor_routes_mixed_source_to_target_recipe(
+    monkeypatch, inherited
+):
+    from vllm.config.compilation import CompilationMode
+    from vllm.model_executor.layers.linear import ReplicatedLinear
+    from vllm.model_executor.models import qwen3_moe
+
+    from tests.support.source import function
+    from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
+
+    metadata = {
+        "quant_method": "fp8",
+        "weight_block_size": [128, 128],
+        "mix_layer": [1],
+    }
+    quant = Fp8ToInt8Config(metadata)
+    hf = SimpleNamespace(
+        quantization_config=metadata,
+        sail_quantization_recipe="_default",
+        vocab_size=128,
+        hidden_size=128,
+        num_hidden_layers=2,
+        rms_norm_eps=1e-6,
+    )
+    quant.maybe_update_config("renamed", hf)
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(hf_text_config=hf),
+        quant_config=quant,
+        parallel_config=SimpleNamespace(
+            eplb_config=SimpleNamespace(num_redundant_experts=0)
+        ),
+        compilation_config=SimpleNamespace(mode=CompilationMode.NONE),
+    )
+    unset = object()
+
+    class Decoder(torch.nn.Module):
+        def __init__(self, *, vllm_config, prefix, quant_config=unset):
+            super().__init__()
+            selected = (
+                vllm_config.quant_config if quant_config is unset else quant_config
+            )
+            self.proj = ReplicatedLinear(
+                128,
+                128,
+                bias=False,
+                params_dtype=torch.bfloat16,
+                quant_config=selected,
+                prefix=prefix + ".mlp.down_proj",
+            )
+
+    # Keep actual upstream base construction; replace expensive embedding/norm
+    # allocation and PP placement, not quantization selection or Linear loading.
+    monkeypatch.setattr(
+        qwen3_moe, "VocabParallelEmbedding", lambda *a, **kw: torch.nn.Identity()
+    )
+    monkeypatch.setattr(qwen3_moe, "RMSNorm", lambda *a, **kw: torch.nn.Identity())
+    monkeypatch.setattr(
+        qwen3_moe,
+        "make_layers",
+        lambda n, factory, prefix: (
+            0,
+            n,
+            torch.nn.ModuleList([factory(f"{prefix}.{i}") for i in range(n)]),
+        ),
+    )
+    init = function(
+        "vllm_sail/patch/enhancement/models/qwen3_moe.py",
+        "model_init",
+        {
+            "_upstream_model_init": qwen3_moe.Qwen3MoeModel.__init__,
+            "_mix_layers": lambda config: config.quantization_config["mix_layer"],
+            "extract_layer_index": lambda prefix: int(prefix.rsplit(".", 1)[1]),
+            "Qwen3MoeDecoderLayer": Decoder,
+        },
+    )
+    cls = (
+        type("InheritedQwenModel", (qwen3_moe.Qwen3MoeModel,), {})
+        if inherited
+        else qwen3_moe.Qwen3MoeModel
+    )
+    model = object.__new__(cls)
+    init(model, vllm_config=config, prefix="model", decoder_layer_type=Decoder)
+    assert model.layers[0].proj.quant_method.source_dtype == "fp8"
+    assert model.layers[1].proj.quant_method.source_dtype == "bf16"
+    assert all(layer.proj.quant_method.target_dtype == "int8" for layer in model.layers)

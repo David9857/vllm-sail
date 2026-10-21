@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.31.0,<0.32.0"
 key_interface_count = 10
-target_count = 257
+target_count = 258
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -88,6 +88,14 @@ module = "vllm/config/kernel.py"
 symbol = "MoEBackend"
 present = true
 fingerprint = "sha256:84c52b6ff19ce00353d7fb978dd60ff876397b436c9a65eafb10c12810cd721b"
+
+[[patch_target]]
+name = "vllm.config.model._get_and_verify_dtype"
+kind = "module"
+module = "vllm/config/model.py"
+symbol = "_get_and_verify_dtype"
+present = true
+fingerprint = "sha256:876e8c2a64fa104947bb59047e4ea96594f3e9ef03ff5e7a98730c8580c2c154"
 
 [[patch_target]]
 name = "vllm.distributed.device_communicators.all2all.DeepEPLLAll2AllManager._make_all2all_kwargs"
