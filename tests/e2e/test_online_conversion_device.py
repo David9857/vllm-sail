@@ -22,8 +22,10 @@ def runtime(monkeypatch):
     monkeypatch.setattr(parameter, "get_tensor_model_parallel_rank", lambda: 0)
     monkeypatch.setattr(parameter, "get_tensor_model_parallel_world_size", lambda: 1)
     from vllm.config import VllmConfig, set_current_vllm_config
+    from vllm.v1.worker.workspace import init_workspace_manager
 
     with set_current_vllm_config(VllmConfig()):
+        init_workspace_manager(torch.device("cuda:0"))
         yield torch
 
 

@@ -16,9 +16,10 @@ vllm serve /path/to/fp8-model --quantization fp8-to-bf16 --dtype bfloat16
 The Python API accepts the same names through `LLM(quantization=..., dtype="bfloat16")`.
 FP8 sources must declare `quant_method: fp8`, `weight_block_size: [128, 128]`,
 E4M3 weights, and dynamic activations. BF16 sources must be unquantized checkpoints;
-weight loaders reject other storage dtypes before implicit casting. Both paths
-require BF16 activation dtype. FP8 decoding cannot recover precision lost during
-original checkpoint quantization.
+weight loaders reject other storage dtypes before implicit casting. The conversion
+uses BF16 for decoded FP8 weights and INT8 scale computation; BF16 and FP16
+activations are accepted where the selected PPU execution backend supports them.
+FP8 decoding cannot recover precision lost during original checkpoint quantization.
 
 ## Recipe selection
 
