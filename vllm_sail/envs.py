@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_DISABLE_MOE_WNA16_CUDA: bool = False
     VLLM_SAIL_FORCE_MOE_WNA16_CUDA: bool = False
     VLLM_SAIL_ENABLE_MOE_MARLIN: bool = False
-    VLLM_SAIL_USE_TRITON_INT8_QUANT: bool = False
+    VLLM_SAIL_USE_TRITON_INT8_QUANT: bool = True
     VLLM_SAIL_FP8_LOAD_POLICY: str | None = None
     VLLM_SAIL_ENABLE_FP8_TO_INT8: bool = False
     VLLM_SAIL_NVTX_PROFILE: bool = False
@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     VLLM_PPU_DISABLE_MOE_WNA16_CUDA: bool = False
     VLLM_PPU_FORCE_MOE_WNA16_CUDA: bool = False
     VLLM_PPU_ENABLE_MOE_MARLIN: bool = False
-    VLLM_PPU_USE_TRITON_INT8_QUANT: bool = False
+    VLLM_PPU_USE_TRITON_INT8_QUANT: bool = True
     VLLM_PPU_FP8_LOAD_POLICY: str | None = None
     VLLM_PPU_ENABLE_FP8_TO_INT8: bool = False
     VLLM_PPU_NVTX_PROFILE: bool = False
@@ -153,9 +153,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # by the CUDA-free manifest; this flag cannot supply those kernels.
     "VLLM_SAIL_ENABLE_MOE_MARLIN": _bool("VLLM_SAIL_ENABLE_MOE_MARLIN", False),
     # -- Quantization -------------------------------------------------------
-    # Native scaled_int8_quant is the correctness default. The Triton path
-    # caused an INT8 model accuracy regression on Zhenwu 810E with vLLM 0.31.
-    "VLLM_SAIL_USE_TRITON_INT8_QUANT": _bool("VLLM_SAIL_USE_TRITON_INT8_QUANT", False),
+    # Triton implementation of dynamic per-token int8 quant; faster than the
+    # compiled kernel on PPU.
+    "VLLM_SAIL_USE_TRITON_INT8_QUANT": _bool("VLLM_SAIL_USE_TRITON_INT8_QUANT", True),
     "VLLM_SAIL_FP8_LOAD_POLICY": _choice(
         "VLLM_SAIL_FP8_LOAD_POLICY", None, ("native", "bf16", "int8")
     ),
