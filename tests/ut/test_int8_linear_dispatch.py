@@ -49,23 +49,22 @@ def kernel():
 
 
 @pytest.mark.parametrize(
-    ("asymmetric", "deepgemm", "acext", "bias", "row_major", "backend", "dtype"),
+    ("asymmetric", "deepgemm", "acext", "bias", "row_major", "backend"),
     [
-        (True, True, True, True, True, "azp", "bf16"),
-        (False, True, True, False, True, "deepgemm", "bf16"),
-        (False, True, True, False, True, "acext", "fp16"),
-        (False, True, True, True, True, "acext", "bf16"),
-        (False, True, False, True, True, "cutlass", "bf16"),
-        (False, False, False, False, False, "cutlass", "bf16"),
+        (True, True, True, True, True, "azp"),
+        (False, True, True, False, True, "deepgemm"),
+        (False, True, True, True, True, "acext"),
+        (False, True, False, True, True, "cutlass"),
+        (False, False, False, False, False, "cutlass"),
     ],
 )
 @pytest.mark.parametrize("triton_quant", [False, True])
 def test_dispatch_preserves_bias_priority_layout_and_output_shape(
-    kernel, asymmetric, deepgemm, acext, bias, row_major, backend, dtype, triton_quant
+    kernel, asymmetric, deepgemm, acext, bias, row_major, backend, triton_quant
 ):
     instance, environment = kernel
-    x = Mock(shape=(2, 3, 64), dtype=dtype)
-    flat = Mock(shape=(6, 64), dtype=dtype)
+    x = Mock(shape=(2, 3, 64), dtype="bf16")
+    flat = Mock(shape=(6, 64), dtype="bf16")
     x.reshape.return_value = flat
     flat.contiguous.return_value = flat
     output = Mock(shape=(6, 128))
@@ -83,7 +82,6 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
     environment.update(
         torch=SimpleNamespace(
             int8="int8",
-            bfloat16="bf16",
             ops=SimpleNamespace(
                 vllm=SimpleNamespace(
                     w8a8_int8_matmul_deepgemm=calls["deepgemm"],
@@ -115,7 +113,7 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
     assert args[1] is (
         weight.t.return_value if backend == "cutlass" and row_major else weight
     )
-    assert kwargs["out_dtype"] == dtype
+    assert kwargs["out_dtype"] == "bf16"
     if backend == "deepgemm":
         assert "bias" not in kwargs
         assert kwargs["scale_x"] is input_scale

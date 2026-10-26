@@ -347,7 +347,7 @@ class PPUInt8ScaledMMLinearKernel(Int8ScaledMMLinearKernel):
                 azp=azp,
                 bias=bias,
             )
-        elif bias is None and x.dtype == torch.bfloat16 and self.use_deepgemm_int8_gemm:
+        elif (bias is None) and self.use_deepgemm_int8_gemm:
             out = torch.ops.vllm.w8a8_int8_matmul_deepgemm(
                 x_q, w_q, scale_x=x_s, scale_w=w_s, out_dtype=x.dtype
             )
