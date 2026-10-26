@@ -30,14 +30,14 @@ application in the allowlist.
 | Variable | Default | Values / behavior |
 | --- | --- | --- |
 | `VLLM_SAIL_MOE_BACKEND` | Automatic | `deepgemm`, `acext`, `triton` |
-| `VLLM_SAIL_DENSE_BACKEND` | Automatic | `deepgemm`, `acext`, `triton` |
+| `VLLM_SAIL_DENSE_BACKEND` | Automatic | `deepgemm`, `acext`, `triton`; default INT8 dense dispatch uses ACEXT (or Cutlass) for non-eager execution and DeepGEMM for eager execution |
 | `VLLM_SAIL_DENSE_BF16_DEEPGEMM` | `0` | Opt into the PPU 1.5 BF16 dense DeepGEMM path |
 | `VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED` | `1` | Enable the supported fused tensor-parallel MoE path |
 | `VLLM_SAIL_USE_PLA` | `1` | Allow PLA linear-attention paths where available |
 | `VLLM_GDN_DECODE_KERNEL` | `auto` on PPU | `auto`, `cuda`, `pla`, `triton`; selects GDN decode independently of prefill and KDA |
 | `VLLM_SAIL_FUSED_RMSNORM_QUANT` | `0` | Enable supported fused RMSNorm and quantization paths |
 | `VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT` | `0` | Enable the optimized token-group quantization path |
-| `VLLM_SAIL_USE_TRITON_INT8_QUANT` | `1` | Use Triton dynamic per-token INT8 quantization |
+| `VLLM_SAIL_USE_TRITON_INT8_QUANT` | `0` | Opt into Triton dynamic per-token INT8 quantization; native quantization is the correctness default |
 | `VLLM_DEEPEPLL_RECV_HOOK` | `1` | Use the deferred receive hook; `0` selects the event-based fallback |
 
 For example, to request the MoE DeepGEMM backend:

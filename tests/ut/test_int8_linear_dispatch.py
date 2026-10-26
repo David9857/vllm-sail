@@ -132,7 +132,8 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
 
 
 @pytest.mark.parametrize("backend", [None, "deepgemm", "acext", "triton"])
-def test_weight_preparation_keeps_backend_layout(kernel, backend):
+@pytest.mark.parametrize("enforce_eager", [False, True])
+def test_weight_preparation_keeps_backend_layout(kernel, backend, enforce_eager):
     instance, environment = kernel
     weight, scale = Mock(), Mock()
     layer = SimpleNamespace(weight=weight, scale=scale, logical_widths=[128])
@@ -148,6 +149,9 @@ def test_weight_preparation_keeps_backend_layout(kernel, backend):
         ),
         ppu_envs=SimpleNamespace(VLLM_SAIL_DENSE_BACKEND=backend),
         current_platform=SimpleNamespace(is_device_capability=lambda cap: True),
+        get_current_vllm_config=lambda: SimpleNamespace(
+            model_config=SimpleNamespace(enforce_eager=enforce_eager)
+        ),
         _get_acext_int8_gemm=lambda: object(),
         is_deep_gemm_supported=lambda: True,
         replace_parameter=replace,
@@ -165,6 +169,7 @@ def test_weight_preparation_keeps_backend_layout(kernel, backend):
 
     instance.process_weights_after_loading(layer)
 
+    assert environment["_int8_dense_non_eager"] is (not enforce_eager)
     row_major = backend != "triton"
     assert instance.weight_RowMajor is row_major
     assert parameters == [
@@ -173,4 +178,62 @@ def test_weight_preparation_keeps_backend_layout(kernel, backend):
     ]
     assert weight.t.call_count == int(not row_major)
     assert instance.use_acext_int8_gemm is (backend in (None, "acext"))
-    assert instance.use_deepgemm_int8_gemm is (backend in (None, "deepgemm"))
+    assert instance.use_deepgemm_int8_gemm is (
+        backend == "deepgemm" or (backend is None and enforce_eager)
+    )
+
+
+@pytest.mark.parametrize(
+    ("enforce_eager", "requested_backend", "expected_backend"),
+    [
+        (True, None, "deepgemm"),
+        (False, None, "acext"),
+        (False, "deepgemm", "deepgemm"),
+    ],
+)
+def test_cached_deepgemm_op_falls_back_in_non_eager_mode(
+    enforce_eager, requested_backend, expected_backend
+):
+    path = (
+        Path(__file__).parents[2]
+        / "vllm_sail/model_executor/kernels/linear/scaled_mm/ppu.py"
+    )
+    tree = ast.parse(path.read_text())
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "w8a8_int8_matmul_deepgemm"
+    )
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__", names=[ast.alias(name="annotations")], level=0
+            ),
+            function,
+        ],
+        type_ignores=[],
+    )
+    output = object()
+    acext = Mock(return_value=output)
+    deepgemm = Mock()
+    environment = dict(
+        _int8_dense_non_eager=not enforce_eager,
+        ppu_envs=SimpleNamespace(VLLM_SAIL_DENSE_BACKEND=requested_backend),
+        _get_acext_int8_gemm=lambda: object(),
+        w8a8_int8_matmul_acext=acext,
+        get_deep_gemm_config=lambda *args, **kwargs: object(),
+        int8_gemm_nt=deepgemm,
+        torch=SimpleNamespace(empty=Mock(return_value=output)),
+    )
+    exec(compile(ast.fix_missing_locations(module), str(path), "exec"), environment)
+    x_q, w_q, scale_x, scale_w = (
+        Mock(shape=(2, 64)),
+        Mock(shape=(128, 64)),
+        object(),
+        object(),
+    )
+    result = environment[function.name](x_q, w_q, scale_x, scale_w, "bf16")
+    assert result is output
+    assert acext.call_count == int(expected_backend == "acext")
+    assert deepgemm.call_count == int(expected_backend == "deepgemm")

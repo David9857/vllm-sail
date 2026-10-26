@@ -24,7 +24,7 @@ BOOL_DEFAULTS = {
     "DISABLE_MOE_WNA16_CUDA": False,
     "FORCE_MOE_WNA16_CUDA": False,
     "ENABLE_MOE_MARLIN": False,
-    "USE_TRITON_INT8_QUANT": True,
+    "USE_TRITON_INT8_QUANT": False,
     "ENABLE_FP8_TO_INT8": False,
     "NVTX_PROFILE": False,
     "NVTX_DUMP_TOPK": False,

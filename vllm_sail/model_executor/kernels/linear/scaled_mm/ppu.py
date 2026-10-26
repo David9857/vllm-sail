@@ -48,6 +48,10 @@ from vllm_sail.utils.deep_gemm import (
 
 logger = init_logger(__name__)
 
+# Set during model weight preparation. Custom-op calls during engine profiling
+# and graph replay do not necessarily have a current VllmConfig context.
+_int8_dense_non_eager = False
+
 
 @cache
 def _get_acext_int8_gemm():
@@ -118,6 +122,15 @@ def w8a8_int8_matmul_deepgemm(
     out_dtype: torch.dtype,
     bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    # A previously compiled graph may still call this custom op after the
+    # default non-eager backend changed. Route that call safely at runtime too.
+    if _int8_dense_non_eager and ppu_envs.VLLM_SAIL_DENSE_BACKEND != "deepgemm":
+        if _get_acext_int8_gemm() is not None:
+            return w8a8_int8_matmul_acext(x_q, w_q, scale_x, scale_w, out_dtype, bias)
+        raise RuntimeError(
+            "INT8 DeepGEMM is unavailable in non-eager mode; "
+            "clear the vLLM compilation cache to select the safe backend"
+        )
     out = torch.empty((x_q.shape[0], w_q.shape[0]), dtype=out_dtype, device=x_q.device)
     M, N, K = x_q.shape[0], w_q.shape[0], x_q.shape[1]
     best_config = get_deep_gemm_config(M, N, K, num_groups=1)
@@ -194,15 +207,20 @@ class PPUInt8ScaledMMLinearKernel(Int8ScaledMMLinearKernel):
         return True, None
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        global _int8_dense_non_eager
         self.use_acext_int8_gemm = False
         self.use_deepgemm_int8_gemm = False
+        requested_backend = ppu_envs.VLLM_SAIL_DENSE_BACKEND
+        model_config = get_current_vllm_config().model_config
+        _int8_dense_non_eager = not model_config.enforce_eager
+        # The INT8 DeepGEMM launcher aborts inside a compiled model's first
+        # request on Zhenwu 810E. Prefer ACEXT (or Cutlass) for the default
+        # non-eager path; an explicit DeepGEMM selection remains available.
+        default_non_eager = not requested_backend and not model_config.enforce_eager
 
         # check acext
         if (
-            (
-                not ppu_envs.VLLM_SAIL_DENSE_BACKEND
-                or ppu_envs.VLLM_SAIL_DENSE_BACKEND == "acext"
-            )
+            (not requested_backend or requested_backend == "acext")
             and current_platform.is_device_capability((8, 0))
             and (_get_acext_int8_gemm() is not None)
         ):
@@ -217,8 +235,8 @@ class PPUInt8ScaledMMLinearKernel(Int8ScaledMMLinearKernel):
         # the variable was set. Spelling corrected here; see
         # docs/user_guide/configuration.md.
         if is_deep_gemm_supported() and (
-            not ppu_envs.VLLM_SAIL_DENSE_BACKEND
-            or ppu_envs.VLLM_SAIL_DENSE_BACKEND == "deepgemm"
+            (not requested_backend and not default_non_eager)
+            or requested_backend == "deepgemm"
         ):
             self.use_deepgemm_int8_gemm = True
 
