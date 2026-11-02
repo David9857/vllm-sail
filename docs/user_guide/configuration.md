@@ -32,7 +32,8 @@ application in the allowlist.
 | `VLLM_SAIL_MOE_BACKEND` | Automatic | `deepgemm`, `acext`, `triton` |
 | `VLLM_SAIL_DENSE_BACKEND` | Automatic | `deepgemm`, `acext`, `triton` |
 | `VLLM_SAIL_DENSE_BF16_DEEPGEMM` | `0` | Opt into the PPU 1.5 BF16 dense DeepGEMM path |
-| `VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED` | `1` | Enable the supported fused tensor-parallel MoE path |
+| `VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED` | `0` | Enable the supported fused tensor-parallel MoE path |
+| `VLLM_SAIL_DEEPGEMM_MOE_FUSED_ACT_QUANT` | `0` | Fuse the activation and the second MoE GEMM's input quantization into DeepGEMM's SiLU/SiTU kernel for the FP8 and MXFP4 experts; the BF16 (w4a16 or unquantized) experts use its values-only kernel, which also replaces the standalone `vllm::silu_and_mul` / `vllm::situ_and_mul` that unquantized BF16 dense MLPs and shared experts run on |
 | `VLLM_SAIL_USE_PLA` | `1` | Allow PLA linear-attention paths where available |
 | `VLLM_GDN_DECODE_KERNEL` | `auto` on PPU | `auto`, `cuda`, `pla`, `triton`; selects GDN decode independently of prefill and KDA |
 | `VLLM_SAIL_FUSED_RMSNORM_QUANT` | `0` | Enable supported fused RMSNorm and quantization paths |
@@ -74,7 +75,7 @@ the guide describes legacy opt-in variable precedence and source-format limits.
 
 | Variable | Default | Behavior |
 | --- | --- | --- |
-| `VLLM_SAIL_DISABLE_MOE_WNA16_CUDA` | `0` | Disable the native WNA16 MoE path |
+| `VLLM_SAIL_DISABLE_MOE_WNA16_CUDA` | `0` | Disable the native WNA16 MoE path; takes precedence over `VLLM_SAIL_FORCE_MOE_WNA16_CUDA` |
 | `VLLM_SAIL_FORCE_MOE_WNA16_CUDA` | `0` | Request the native WNA16 path; raises if the kernel is unavailable |
 | `VLLM_SAIL_ENABLE_MOE_MARLIN` | `0` | Legacy selection gate; does not enable excluded native Marlin kernels |
 | `VLLM_SAIL_FUSED_GDN_DECODE` | `1` | Legacy getter; dispatch now uses `VLLM_SAIL_USE_PLA` |
@@ -94,11 +95,14 @@ root. The SAIL SDK's optional `model_prof` package adds iteration hooks.
 
 ## Version metadata
 
-Release installations should report their version directly. If a source build
-has ambiguous version metadata, `VLLM_VERSION` can state its actual upstream
-release base. For example, use `VLLM_VERSION=0.31.0` only for a checkout verified
-to be based on that release. This override changes the version check; it does
-not make an incompatible checkout supported.
+Commit-pinned installations must report the full source SHA recorded in the
+packaged kernel manifest. Leave `VLLM_VERSION` and `VLLM_VERSION_OVERRIDE` unset
+so the plugin can verify that identity.
+
+For release-tag metadata, `VLLM_VERSION` can state the actual release base when a
+source build reports an ambiguous version. Use `VLLM_VERSION=0.32.0` only for a
+checkout verified against that release. Commit-pinned installations still
+require their full source SHA.
 
 ## Inspect the active environment
 
@@ -110,6 +114,10 @@ The report includes versions, device information, SDK package availability and
 the PPU environment-variable snapshot. Package presence is a discovery check;
 successful loading and execution require the
 [verification steps](verification_guide.md).
+
+`PPU_SDK` is also read at runtime and defaults to `/usr/local/PPU_SDK`. When
+importing ACEXT fails on an unresolved cuBLAS symbol, the plugin preloads
+`CUDA_SDK/lib64/libcublas.so` from that root and retries.
 
 Build-time settings such as `PPU_SDK`, `HGCC`, `CMAKE_HGCC_DIR` and
 `PYTORCH_SAIL_ARCH` are documented in [HGGC kernels](../developer_guide/kernels.md#build-settings).

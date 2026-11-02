@@ -9,9 +9,9 @@
 
 [meta]
 schema = 1
-vllm_version_range = ">=0.31.0,<0.32.0"
+vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 258
+target_count = 278
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -23,7 +23,7 @@ fingerprint = "sha256:34692ac48c0dc502cf39ea0a331e6bc0773daa4ce33d98bfae61cdedae
 symbol = "vllm.platforms.interface.Platform"
 kind = "class"
 present = true
-fingerprint = "sha256:afba637b4ce7460b58317c3498fbf3558f5877b64df4acce9f46ae35fc8e3182"
+fingerprint = "sha256:377cba3d9e9319aa2477d33ccd21308c80f94a71d0a914c3e43fa0ba0b100564"
 
 [[key_interface]]
 symbol = "vllm.platforms.cuda.NvmlCudaPlatform"
@@ -41,25 +41,25 @@ fingerprint = "sha256:b000add51e983eda3dee41ae9b7a040ec14f912ba762472274a835f800
 symbol = "vllm.v1.attention.backend.AttentionBackend"
 kind = "class"
 present = true
-fingerprint = "sha256:a7a2a11aa14d71e74281ae5b14ba89ea8d0833f028349f9699792439b690197d"
+fingerprint = "sha256:9566957fa93150740bac407d359e35d7a6fbeb4a22f0b855125170a3cd4d7312"
 
 [[key_interface]]
 symbol = "vllm.v1.attention.backend.AttentionMetadataBuilder"
 kind = "class"
 present = true
-fingerprint = "sha256:8631f0ce2e3d059f07a073e53ff987048969bb39362054b0704677cefbab5081"
+fingerprint = "sha256:d4c578b62f838aab4803f4fb10dd53b74ff5844ff014b206c8ff31a7785ed3a5"
 
 [[key_interface]]
 symbol = "vllm.v1.attention.backends.registry.AttentionBackendEnum"
 kind = "enum"
 present = true
-fingerprint = "sha256:bd5d02a307269fa07f8bb0447e0387d34b5aef85b042d271d147f1330e282727"
+fingerprint = "sha256:6089ae5c6027abd2fc7a1fac04bd537525ea892696dfd1ebafa620d3a27f88b9"
 
 [[key_interface]]
 symbol = "vllm.v1.attention.backends.registry.register_backend"
 kind = "function"
 present = true
-fingerprint = "sha256:a36371a2811fa978706a863fcd2446f292b7267b9fade30fe050c4f238ce9562"
+fingerprint = "sha256:e7b6003f95c5f1e9b2f08b571d71d30e396c2fa09042b55cb09b8e48ea678188"
 
 [[key_interface]]
 symbol = "vllm.model_executor.kernels.linear.register_linear_kernel"
@@ -87,7 +87,7 @@ kind = "value"
 module = "vllm/config/kernel.py"
 symbol = "MoEBackend"
 present = true
-fingerprint = "sha256:84c52b6ff19ce00353d7fb978dd60ff876397b436c9a65eafb10c12810cd721b"
+fingerprint = "sha256:bc29e48b1a2dd4b72fa76222017aa02fe719fa14860cc2731988820c59aa6ff3"
 
 [[patch_target]]
 name = "vllm.config.model._get_and_verify_dtype"
@@ -106,12 +106,28 @@ present = true
 fingerprint = "sha256:f5637596191349ab986e9f06b1b069de4fcddf69626e79ed1ef5ace2312a6056"
 
 [[patch_target]]
+name = "vllm.distributed.device_communicators.pynccl.PyNcclCommunicator.suspend"
+kind = "class"
+module = "vllm/distributed/device_communicators/pynccl.py"
+symbol = "PyNcclCommunicator.suspend"
+present = true
+fingerprint = "sha256:260b1dc983572fc87c137c4789a21f6ea447ba93001f75bcf04affa1503a6ddb"
+
+[[patch_target]]
+name = "vllm.distributed.device_communicators.pynccl_wrapper.NCCLLibrary.__init__"
+kind = "class"
+module = "vllm/distributed/device_communicators/pynccl_wrapper.py"
+symbol = "NCCLLibrary.__init__"
+present = true
+fingerprint = "sha256:2234125a1666659a33efb04a16c7aac30027d490fc66d32d4dde4e4abb205f2c"
+
+[[patch_target]]
 name = "vllm.envs.environment_variables"
 kind = "module"
 module = "vllm/envs.py"
 symbol = "environment_variables"
 present = true
-fingerprint = "sha256:5479fc6a1dd73523255feadb0a1a58abb5cefff0e88cbba5e4f713c779876cb9"
+fingerprint = "sha256:980e86b46538c981bbee841b939d02b5c5c3507e6ae067d601984f8e6a10138e"
 
 [[patch_target]]
 name = "vllm.lora.layers.utils.try_get_optimal_moe_config"
@@ -138,12 +154,76 @@ present = false
 fingerprint = ""
 
 [[patch_target]]
+name = "vllm.model_executor.kernels.linear.mixed_precision.humming.has_humming"
+kind = "module"
+module = "vllm/model_executor/kernels/linear/mixed_precision/humming.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.linear.mxfp4.humming.has_humming"
+kind = "module"
+module = "vllm/model_executor/kernels/linear/mxfp4/humming.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.linear.mxfp6.humming.has_humming"
+kind = "module"
+module = "vllm/model_executor/kernels/linear/mxfp6/humming.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.linear.mxfp8.humming.has_humming"
+kind = "module"
+module = "vllm/model_executor/kernels/linear/mxfp8/humming.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.linear.nvfp4.humming.has_humming"
+kind = "module"
+module = "vllm/model_executor/kernels/linear/nvfp4/humming.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.linear.scaled_mm.humming.has_humming"
+kind = "module"
+module = "vllm/model_executor/kernels/linear/scaled_mm/humming.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
 name = "vllm.model_executor.kernels.mhc.tilelang._hc_prenorm_gemm_outputs"
 kind = "module"
 module = "vllm/model_executor/kernels/mhc/tilelang.py"
 symbol = "_hc_prenorm_gemm_outputs"
 present = true
 fingerprint = "sha256:99d79181417220d87f6a377fe74dc2434bd369b0a167db1b9ca36d9e680e439b"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.activation.SiluAndMul.forward_ppu"
+kind = "class"
+module = "vllm/model_executor/layers/activation.py"
+symbol = "SiluAndMul.forward_ppu"
+present = false
+fingerprint = ""
+
+[[patch_target]]
+name = "vllm.model_executor.layers.activation.SituAndMul.forward_ppu"
+kind = "class"
+module = "vllm/model_executor/layers/activation.py"
+symbol = "SituAndMul.forward_ppu"
+present = false
+fingerprint = ""
 
 [[patch_target]]
 name = "vllm.model_executor.layers.attention.mla_attention.MLAAttention.forward_impl"
@@ -160,6 +240,14 @@ module = "vllm/model_executor/layers/attention/mla_attention.py"
 symbol = "_get_kv_b_proj_input_dtype"
 present = true
 fingerprint = "sha256:e22698ee1e89e8b5464ebc05455020244e0ae02d1891ed784ac7819898342741"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.attention.mm_encoder_attention.get_flash_attn_version"
+kind = "module"
+module = "vllm/model_executor/layers/attention/mm_encoder_attention.py"
+symbol = "get_flash_attn_version"
+present = true
+fingerprint = "sha256:cf8bf824565cd858dcb3f37007b2fd90f0ef16447b4a52ae706cc90ba92f3308"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.all2all_utils.maybe_make_prepare_finalize"
@@ -210,6 +298,14 @@ present = true
 fingerprint = "sha256:4a9d092fb0f0c28b5c57e11b3d8b5b50db05827c892a0db7b68b8a331ab382bf"
 
 [[patch_target]]
+name = "vllm.model_executor.layers.fused_moe.experts.fused_humming_moe.has_humming"
+kind = "module"
+module = "vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.experts.triton_moe.TritonExperts.apply"
 kind = "class"
 module = "vllm/model_executor/layers/fused_moe/experts/triton_moe.py"
@@ -231,7 +327,7 @@ kind = "module"
 module = "vllm/model_executor/layers/fused_moe/experts/triton_moe.py"
 symbol = "invoke_fused_moe_triton_kernel"
 present = true
-fingerprint = "sha256:4163de0c830ffb404b86278e31fc33d1f402ce17290d2dc22837c2fb2c94c395"
+fingerprint = "sha256:8453cffa0ff82ce0a92283930359ef7cd332c57a1490996e522ee1bbbad4596e"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.experts.triton_moe.invoke_fused_moe_wna16_triton_kernel"
@@ -239,7 +335,7 @@ kind = "module"
 module = "vllm/model_executor/layers/fused_moe/experts/triton_moe.py"
 symbol = "invoke_fused_moe_wna16_triton_kernel"
 present = true
-fingerprint = "sha256:4163de0c830ffb404b86278e31fc33d1f402ce17290d2dc22837c2fb2c94c395"
+fingerprint = "sha256:8453cffa0ff82ce0a92283930359ef7cd332c57a1490996e522ee1bbbad4596e"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.experts.triton_moe.moe_kernel_quantize_input"
@@ -255,7 +351,7 @@ kind = "module"
 module = "vllm/model_executor/layers/fused_moe/experts/triton_moe.py"
 symbol = "try_get_optimal_moe_config"
 present = true
-fingerprint = "sha256:4163de0c830ffb404b86278e31fc33d1f402ce17290d2dc22837c2fb2c94c395"
+fingerprint = "sha256:8453cffa0ff82ce0a92283930359ef7cd332c57a1490996e522ee1bbbad4596e"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.fused_moe.dispatch_fused_moe_kernel"
@@ -575,7 +671,7 @@ kind = "module"
 module = "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py"
 symbol = "convert_weight_to_mxfp4_moe_kernel_format"
 present = true
-fingerprint = "sha256:2c024969f0a5e59878d4f0bcdacc8011deed4e157f13584b7c8acf0b09b85266"
+fingerprint = "sha256:5049f0c0a015d2b34058f378beac9fb2aed1296bcfa35213331276b81bffcf18"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.oracle.mxfp4.make_mxfp4_moe_quant_config"
@@ -594,14 +690,6 @@ present = true
 fingerprint = "sha256:2da687ad1ac8f9dcc70909001dfb32139e1804f9ed841a92763e3a432ce11f86"
 
 [[patch_target]]
-name = "vllm.model_executor.layers.fused_moe.oracle.mxfp4.maybe_make_prepare_finalize"
-kind = "module"
-module = "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py"
-symbol = "maybe_make_prepare_finalize"
-present = true
-fingerprint = "sha256:ebc96cd0d674ab6c748e9b0e0183332a69496e166b4733b96b17e867c86d3418"
-
-[[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.oracle.mxfp4.mxfp4_round_up_hidden_size_and_intermediate_size"
 kind = "module"
 module = "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py"
@@ -616,14 +704,6 @@ module = "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py"
 symbol = "select_deepseek_v4_mxfp4_moe_backend"
 present = true
 fingerprint = "sha256:545012cd4cfeb1c4614b043d6098246816395eeba49922dc88015d31536c2edf"
-
-[[patch_target]]
-name = "vllm.model_executor.layers.fused_moe.oracle.mxfp4.select_mxfp4_moe_backend"
-kind = "module"
-module = "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py"
-symbol = "select_mxfp4_moe_backend"
-present = true
-fingerprint = "sha256:58a7106042a14752a19f60eb197874acac11f48b5c60e311e12861513e4877ea"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.oracle.mxfp8.backend_to_kernel_cls"
@@ -690,22 +770,6 @@ present = true
 fingerprint = "sha256:0330af16e70d0f17a4937cd298a81d2a65c2069b4debd1fb61e711910ee78c8c"
 
 [[patch_target]]
-name = "vllm.model_executor.layers.fused_moe.prepare_finalize.deepep_ht.moe_kernel_quantize_input"
-kind = "module"
-module = "vllm/model_executor/layers/fused_moe/prepare_finalize/deepep_ht.py"
-symbol = "moe_kernel_quantize_input"
-present = true
-fingerprint = "sha256:12dd5d8f3119900d50febe5bd36cb1fc2d1f37a6d47d796f7361163846f09506"
-
-[[patch_target]]
-name = "vllm.model_executor.layers.fused_moe.prepare_finalize.deepep_ll.moe_kernel_quantize_input"
-kind = "module"
-module = "vllm/model_executor/layers/fused_moe/prepare_finalize/deepep_ll.py"
-symbol = "moe_kernel_quantize_input"
-present = true
-fingerprint = "sha256:9d0aa8be32e450045341843b92bee2fa29fdfe1fd5ca9079bb8da3bf7c71c077"
-
-[[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.prepare_finalize.flashinfer_nvlink_one_sided.moe_kernel_quantize_input"
 kind = "module"
 module = "vllm/model_executor/layers/fused_moe/prepare_finalize/flashinfer_nvlink_one_sided.py"
@@ -751,7 +815,7 @@ kind = "module"
 module = "vllm/model_executor/layers/fused_moe/utils.py"
 symbol = "moe_kernel_quantize_input"
 present = true
-fingerprint = "sha256:08c17091b365719757d8a796d00a8e8cf408ad32850e30f1c4d552ade38cfe13"
+fingerprint = "sha256:79bad14b9bf40653fc2d263b977bf2756b084ee52961a44cb3460fb9f07a1dc5"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.linear.dispatch_unquantized_gemm"
@@ -759,7 +823,7 @@ kind = "module"
 module = "vllm/model_executor/layers/linear.py"
 symbol = "dispatch_unquantized_gemm"
 present = true
-fingerprint = "sha256:70696c5e110409041f69e463f5473e7e6bdc9ceee29cfaa5a8d51205f348e247"
+fingerprint = "sha256:59ddc52a81a5dd80f6e14f0d8c5d93a438926c95fd62ebc4e70bc7500212f96e"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn.ChunkGatedDeltaRule.__init__"
@@ -823,7 +887,7 @@ kind = "module"
 module = "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py"
 symbol = "_resolve_gdn_prefill_backend"
 present = true
-fingerprint = "sha256:c981c85c82d6cb32e8582f3021669339b44b7012ddcb819baea48bfe8947670e"
+fingerprint = "sha256:d0e05e35406e6657b842664022af3408cb64b80147f0fa534bf9cb25a4c091c3"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.mhc.HCHeadOp.forward_ppu"
@@ -1178,12 +1242,20 @@ present = true
 fingerprint = "sha256:81b73ea4767c80e5940014758298560e75111c5651a9b6fa6ca2ad6c8b4e4f3a"
 
 [[patch_target]]
+name = "vllm.model_executor.layers.quantization.mxfp4.backend_to_kernel_cls"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/mxfp4.py"
+symbol = "backend_to_kernel_cls"
+present = true
+fingerprint = "sha256:e96ed92fa9aff4c269a19021ece97f2ce9f1f377c1f4cf3eabb211bd94a02df0"
+
+[[patch_target]]
 name = "vllm.model_executor.layers.quantization.mxfp4.convert_gpt_oss_weight_to_mxfp4_moe_kernel_format"
 kind = "module"
 module = "vllm/model_executor/layers/quantization/mxfp4.py"
 symbol = "convert_gpt_oss_weight_to_mxfp4_moe_kernel_format"
 present = true
-fingerprint = "sha256:0ee0a621029fabbca37f2ee9fbac04b97c20af523cf08c1fc0d7461e12d9e695"
+fingerprint = "sha256:e96ed92fa9aff4c269a19021ece97f2ce9f1f377c1f4cf3eabb211bd94a02df0"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.quantization.mxfp4.convert_weight_to_mxfp4_moe_kernel_format"
@@ -1191,7 +1263,7 @@ kind = "module"
 module = "vllm/model_executor/layers/quantization/mxfp4.py"
 symbol = "convert_weight_to_mxfp4_moe_kernel_format"
 present = true
-fingerprint = "sha256:0ee0a621029fabbca37f2ee9fbac04b97c20af523cf08c1fc0d7461e12d9e695"
+fingerprint = "sha256:e96ed92fa9aff4c269a19021ece97f2ce9f1f377c1f4cf3eabb211bd94a02df0"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.quantization.mxfp4.make_mxfp4_moe_quant_config"
@@ -1199,7 +1271,7 @@ kind = "module"
 module = "vllm/model_executor/layers/quantization/mxfp4.py"
 symbol = "make_mxfp4_moe_quant_config"
 present = true
-fingerprint = "sha256:0ee0a621029fabbca37f2ee9fbac04b97c20af523cf08c1fc0d7461e12d9e695"
+fingerprint = "sha256:e96ed92fa9aff4c269a19021ece97f2ce9f1f377c1f4cf3eabb211bd94a02df0"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.quantization.mxfp4.mxfp4_round_up_hidden_size_and_intermediate_size"
@@ -1207,7 +1279,7 @@ kind = "module"
 module = "vllm/model_executor/layers/quantization/mxfp4.py"
 symbol = "mxfp4_round_up_hidden_size_and_intermediate_size"
 present = true
-fingerprint = "sha256:0ee0a621029fabbca37f2ee9fbac04b97c20af523cf08c1fc0d7461e12d9e695"
+fingerprint = "sha256:e96ed92fa9aff4c269a19021ece97f2ce9f1f377c1f4cf3eabb211bd94a02df0"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.quantization.mxfp4.select_deepseek_v4_mxfp4_moe_backend"
@@ -1215,15 +1287,15 @@ kind = "module"
 module = "vllm/model_executor/layers/quantization/mxfp4.py"
 symbol = "select_deepseek_v4_mxfp4_moe_backend"
 present = true
-fingerprint = "sha256:0ee0a621029fabbca37f2ee9fbac04b97c20af523cf08c1fc0d7461e12d9e695"
+fingerprint = "sha256:e96ed92fa9aff4c269a19021ece97f2ce9f1f377c1f4cf3eabb211bd94a02df0"
 
 [[patch_target]]
-name = "vllm.model_executor.layers.quantization.mxfp4.select_mxfp4_moe_backend"
+name = "vllm.model_executor.layers.quantization.online.fp8.select_fp8_moe_backend"
 kind = "module"
-module = "vllm/model_executor/layers/quantization/mxfp4.py"
-symbol = "select_mxfp4_moe_backend"
+module = "vllm/model_executor/layers/quantization/online/fp8.py"
+symbol = "select_fp8_moe_backend"
 present = true
-fingerprint = "sha256:0ee0a621029fabbca37f2ee9fbac04b97c20af523cf08c1fc0d7461e12d9e695"
+fingerprint = "sha256:898a6678febc9b8866e4086e99f4d961c96c57af92156dc496e7640018fce40e"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.quantization.utils.fp8_utils.get_tma_aligned_size"
@@ -1258,12 +1330,28 @@ present = true
 fingerprint = "sha256:593b80015d80d508b2f55c594e11c11bc23f444f1f0fe57f761b9d3da5ee3905"
 
 [[patch_target]]
+name = "vllm.model_executor.layers.quantization.utils.humming.moe.has_humming"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/utils/humming/moe.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
+
+[[patch_target]]
 name = "vllm.model_executor.layers.quantization.utils.humming.moe.maybe_make_prepare_finalize"
 kind = "module"
 module = "vllm/model_executor/layers/quantization/utils/humming/moe.py"
 symbol = "maybe_make_prepare_finalize"
 present = true
 fingerprint = "sha256:ebc96cd0d674ab6c748e9b0e0183332a69496e166b4733b96b17e867c86d3418"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.quantization.utils.humming.schema.has_humming"
+kind = "module"
+module = "vllm/model_executor/layers/quantization/utils/humming/schema.py"
+symbol = "has_humming"
+present = true
+fingerprint = "sha256:234e827585c309a8fc910ac145c33655bd01b5d2938a114ff2754cb5e1c16568"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.quantization.utils.int8_utils._per_token_group_quant_int8"
@@ -1312,6 +1400,14 @@ module = "vllm/model_executor/layers/sparse_attn_indexer.py"
 symbol = "SparseAttnIndexer.forward_ppu"
 present = false
 fingerprint = ""
+
+[[patch_target]]
+name = "vllm.model_executor.layers.sparse_attn_indexer.has_cutedsl"
+kind = "module"
+module = "vllm/model_executor/layers/sparse_attn_indexer.py"
+symbol = "has_cutedsl"
+present = true
+fingerprint = "sha256:f0b8190f5e389d18b797784733fd9f983757ca522a31079f096f165b053461a7"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.utils.dispatch_unquantized_gemm"
@@ -1399,7 +1495,7 @@ kind = "class"
 module = "vllm/model_executor/models/qwen3_moe.py"
 symbol = "Qwen3MoeDecoderLayer.__init__"
 present = true
-fingerprint = "sha256:abfe77e2d9e7a748d2e339c70525f2919785aca6232493338f492f14f49bbd73"
+fingerprint = "sha256:b820a8db23f74ac01326c95d2fe07a9aa8676ca23fd4284e89f342d5eb5728a3"
 
 [[patch_target]]
 name = "vllm.model_executor.models.qwen3_moe.Qwen3MoeModel.__init__"
@@ -1490,14 +1586,6 @@ present = true
 fingerprint = "sha256:92c586db8d0f5a8f373e49becd3e61e002d83219f0a623fdce6f580689e677a6"
 
 [[patch_target]]
-name = "vllm.models.deepseek_v4.attention.dsa_indexer_uses_fp4"
-kind = "module"
-module = "vllm/models/deepseek_v4/attention.py"
-symbol = "dsa_indexer_uses_fp4"
-present = true
-fingerprint = "sha256:8a0d261fd2d7cea3cf38f1585dde703f9867c963de5e980519ec9e790be80d0c"
-
-[[patch_target]]
 name = "vllm.models.deepseek_v4.attention.fused_indexer_q_rope_quant"
 kind = "module"
 module = "vllm/models/deepseek_v4/attention.py"
@@ -1554,12 +1642,12 @@ present = true
 fingerprint = "sha256:277bb7424748f51ed9854495829a4d10360ef121c87a9149f9c69efa9f60c581"
 
 [[patch_target]]
-name = "vllm.models.deepseek_v4.compressor.DeepseekCompressor.forward"
+name = "vllm.models.deepseek_v4.compressor.DeepseekCompressor._compress_norm_rope_store"
 kind = "class"
 module = "vllm/models/deepseek_v4/compressor.py"
-symbol = "DeepseekCompressor.forward"
+symbol = "DeepseekCompressor._compress_norm_rope_store"
 present = true
-fingerprint = "sha256:2f40ba99c7ff0094f51dfb3cd4b4b34b54ed0507f950d06282f9525b26ca33a1"
+fingerprint = "sha256:275eeba1fba646d8a7590f49d1df0ba2cea0c41ca57a22be2a4bcea905b47cab"
 
 [[patch_target]]
 name = "vllm.models.deepseek_v4.compressor.compress_norm_rope_store_triton"
@@ -1578,28 +1666,60 @@ present = true
 fingerprint = "sha256:5822da201bfeb0832925ce5a5d13986701c954b2b20d5ae1f67e2d116c29f360"
 
 [[patch_target]]
-name = "vllm.models.deepseek_v4.nvidia.flashmla.flash_mla_sparse_fwd"
-kind = "module"
-module = "vllm/models/deepseek_v4/nvidia/flashmla.py"
-symbol = "flash_mla_sparse_fwd"
-present = true
-fingerprint = "sha256:5639adeb0bc29a374a8d540c45b235dbb4522c90c91f3aab45f16aa164a5b834"
-
-[[patch_target]]
-name = "vllm.models.deepseek_v4.nvidia.flashmla.flash_mla_with_kvcache"
-kind = "module"
-module = "vllm/models/deepseek_v4/nvidia/flashmla.py"
-symbol = "flash_mla_with_kvcache"
-present = true
-fingerprint = "sha256:5639adeb0bc29a374a8d540c45b235dbb4522c90c91f3aab45f16aa164a5b834"
-
-[[patch_target]]
 name = "vllm.models.deepseek_v4.nvidia.model._select_dsv4_attn_cls"
 kind = "module"
 module = "vllm/models/deepseek_v4/nvidia/model.py"
 symbol = "_select_dsv4_attn_cls"
 present = true
 fingerprint = "sha256:cd9f420e339d3b9ab68d87165c2a97f241aedc28639e1be8e2606fdd8a69cbdb"
+
+[[patch_target]]
+name = "vllm.models.glm5next.common.attention.fwht128_quant_fp8"
+kind = "module"
+module = "vllm/models/glm5next/common/attention.py"
+symbol = "fwht128_quant_fp8"
+present = true
+fingerprint = "sha256:9ae4b0278a9922c73599b842b07766a9d7734d784b6c9c49b865651c85ea509a"
+
+[[patch_target]]
+name = "vllm.models.glm5next.common.model._try_load_fp8_attn_proj"
+kind = "module"
+module = "vllm/models/glm5next/common/model.py"
+symbol = "_try_load_fp8_attn_proj"
+present = true
+fingerprint = "sha256:bd40125e58ea071dbf6f1414351fb09932ed2c0fbbd75256cf52842b24fbfc30"
+
+[[patch_target]]
+name = "vllm.models.glm5next.nvidia.ops.kpool_compress.fwht128_quant_fp8"
+kind = "module"
+module = "vllm/models/glm5next/nvidia/ops/kpool_compress.py"
+symbol = "fwht128_quant_fp8"
+present = true
+fingerprint = "sha256:d48a42a54160cf8b665a80fa69556b430a73d84126c58dc4f38010d4f8c1d0de"
+
+[[patch_target]]
+name = "vllm.models.glm5next.nvidia.sparse_indexer.SparseAttnIndexerKpool.forward_native"
+kind = "class"
+module = "vllm/models/glm5next/nvidia/sparse_indexer.py"
+symbol = "SparseAttnIndexerKpool.forward_native"
+present = true
+fingerprint = "sha256:413b1402524db9191dce62a48a13b5b6859ddcada49eb09fb038de20ec1268f0"
+
+[[patch_target]]
+name = "vllm.models.glm5next.nvidia.sparse_indexer.SparseAttnIndexerKpool.forward_ppu"
+kind = "class"
+module = "vllm/models/glm5next/nvidia/sparse_indexer.py"
+symbol = "SparseAttnIndexerKpool.forward_ppu"
+present = false
+fingerprint = ""
+
+[[patch_target]]
+name = "vllm.models.glm5next.nvidia.sparse_indexer.has_cutedsl"
+kind = "module"
+module = "vllm/models/glm5next/nvidia/sparse_indexer.py"
+symbol = "has_cutedsl"
+present = true
+fingerprint = "sha256:f0b8190f5e389d18b797784733fd9f983757ca522a31079f096f165b053461a7"
 
 [[patch_target]]
 name = "vllm.models.kimi_k3.nvidia.kda.KimiK3DeltaAttention.__init__"
@@ -1648,6 +1768,38 @@ module = "vllm/models/kimi_k3/nvidia/kda.py"
 symbol = "is_fused_kda_decode_supported"
 present = true
 fingerprint = "sha256:bcac008483fce3d460657fbe040ce125db05ee92818e9e012a738e21a624ef7f"
+
+[[patch_target]]
+name = "vllm.models.kimi_k3.nvidia.latent_moe_runner.LatentMoERunner.__init__"
+kind = "class"
+module = "vllm/models/kimi_k3/nvidia/latent_moe_runner.py"
+symbol = "LatentMoERunner.__init__"
+present = true
+fingerprint = "sha256:93c65cfe8410be6b954a16b1df5bd35434a27ecd0afd833d21a2fce0c839a41f"
+
+[[patch_target]]
+name = "vllm.models.kimi_k3.nvidia.latent_moe_runner.LatentMoERunner._overlap_allreduce_tail"
+kind = "class"
+module = "vllm/models/kimi_k3/nvidia/latent_moe_runner.py"
+symbol = "LatentMoERunner._overlap_allreduce_tail"
+present = true
+fingerprint = "sha256:9015fb804fff198294183e26a6c381df6b00986cfbd0ae163834c57539052f62"
+
+[[patch_target]]
+name = "vllm.models.kimi_k3.nvidia.latent_moe_runner.LatentMoERunner._select_tail_tier"
+kind = "class"
+module = "vllm/models/kimi_k3/nvidia/latent_moe_runner.py"
+symbol = "LatentMoERunner._select_tail_tier"
+present = true
+fingerprint = "sha256:1797c45874f400e8eae658738c578f4017082edac65a3e1e4de455f5bd5c5cdd"
+
+[[patch_target]]
+name = "vllm.models.kimi_k3.nvidia.model.KimiRoutedOutputTransform.forward"
+kind = "class"
+module = "vllm/models/kimi_k3/nvidia/model.py"
+symbol = "KimiRoutedOutputTransform.forward"
+present = true
+fingerprint = "sha256:82d672f98450ec92117cb7a8a39de7cac5e84d99e190614319005ae41e6e7c49"
 
 [[patch_target]]
 name = "vllm.platforms.interface.Platform.is_ppu"
@@ -1874,20 +2026,20 @@ present = true
 fingerprint = "sha256:1c2f2ae45efc60979b7a5c7eac8699ea410c88b0a27dffe31053bae6617c53c4"
 
 [[patch_target]]
-name = "vllm.v1.attention.backends.mla.flashmla.FlashMLAImpl.forward_mqa"
-kind = "class"
-module = "vllm/v1/attention/backends/mla/flashmla.py"
-symbol = "FlashMLAImpl.forward_mqa"
-present = true
-fingerprint = "sha256:aa174c6c15259bba787767b01db2cef3c45c7fe6496abff6c1287de139111e01"
-
-[[patch_target]]
 name = "vllm.v1.attention.backends.mla.flashmla.FlashMLAMetadataBuilder.__init__"
 kind = "class"
 module = "vllm/v1/attention/backends/mla/flashmla.py"
 symbol = "FlashMLAMetadataBuilder.__init__"
 present = true
 fingerprint = "sha256:b65b6e1994f8d31eef04851d7a2b730fcf53b1cc9ef90e2e1cd62d8a4490f050"
+
+[[patch_target]]
+name = "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseBackend.supports_combination"
+kind = "class"
+module = "vllm/v1/attention/backends/mla/flashmla_sparse.py"
+symbol = "FlashMLASparseBackend.supports_combination"
+present = true
+fingerprint = "sha256:1cc372762327e6d4a08efd530e8209c5a02e67b8a3c75aefe75afddacaa1438e"
 
 [[patch_target]]
 name = "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseBackend.supports_compute_capability"
@@ -1959,7 +2111,7 @@ kind = "module"
 module = "vllm/v1/attention/backends/mla/indexer.py"
 symbol = "get_paged_mqa_logits_metadata"
 present = true
-fingerprint = "sha256:8c56d4cc553b53b089cda895994b359df49475a88ff3f8a5b93b1f155b1aa95e"
+fingerprint = "sha256:8e658afea194ac1429d46be51d6def525250990c475a7f89d7412d027a7c3528"
 
 [[patch_target]]
 name = "vllm.v1.attention.backends.mla.prefill.flash_attn.FlashAttnPrefillBackend.__init__"
@@ -1968,14 +2120,6 @@ module = "vllm/v1/attention/backends/mla/prefill/flash_attn.py"
 symbol = "FlashAttnPrefillBackend.__init__"
 present = true
 fingerprint = "sha256:1d9fdfc8d1c9084d5c492a8e546e79eb9138642f636fcfd7e4e9fb9001f9a0b0"
-
-[[patch_target]]
-name = "vllm.v1.attention.backends.mla.sparse_swa.get_mla_metadata"
-kind = "module"
-module = "vllm/v1/attention/backends/mla/sparse_swa.py"
-symbol = "get_mla_metadata"
-present = true
-fingerprint = "sha256:97f9dad8fa3099c375ac5f9d3fb1372fb22d20dec650db5024d0e12119710009"
 
 [[patch_target]]
 name = "vllm.v1.attention.ops.flashmla._is_flashmla_available"
@@ -2050,6 +2194,14 @@ present = true
 fingerprint = "sha256:1b8fd9c5d097cb8dff521bc36d38b269028ddcd5f1a18dada8e637c9ac2f6dc8"
 
 [[patch_target]]
+name = "vllm.v1.engine.async_llm.AsyncLLM.shutdown"
+kind = "class"
+module = "vllm/v1/engine/async_llm.py"
+symbol = "AsyncLLM.shutdown"
+present = true
+fingerprint = "sha256:10d2c7e2ec7542133b7972aa028326b3b92b7cd9e966ecf681e993d784be7dc0"
+
+[[patch_target]]
 name = "vllm.v1.kv_cache_interface.HiddenStateCacheSpec.__eq__"
 kind = "class"
 module = "vllm/v1/kv_cache_interface.py"
@@ -2106,6 +2258,14 @@ present = true
 fingerprint = "sha256:f15a90f20d9d0340389137db84ecd327ecbf8c3ab3a51dacb2581efe629908e1"
 
 [[patch_target]]
+name = "vllm.v1.watermarking.spec_decode.rejection_sample"
+kind = "module"
+module = "vllm/v1/watermarking/spec_decode.py"
+symbol = "rejection_sample"
+present = true
+fingerprint = "sha256:76fecfb1df4cc99b23a2c72b7e1c61b726e9c749fe60f588dabec53aeb211406"
+
+[[patch_target]]
 name = "vllm.v1.worker.gpu.spec_decode.rejection_sampler.rejection_sample"
 kind = "module"
 module = "vllm/v1/worker/gpu/spec_decode/rejection_sampler.py"
@@ -2119,7 +2279,7 @@ kind = "module"
 module = "vllm/v1/worker/gpu/spec_decode/rejection_sampler_utils.py"
 symbol = "rejection_sample"
 present = true
-fingerprint = "sha256:262ad9ea5cdd52f5d84795c917a524c8b52ad7c74ffadb0828876af09ca4d143"
+fingerprint = "sha256:abad627f3fa78184874564311eb22c2190a8262391a54cbd4f3c47640bc8c5d4"
 
 [[patch_target]]
 name = "vllm.v1.worker.gpu_model_runner.GPUModelRunner.may_reinitialize_input_batch"
@@ -2127,7 +2287,7 @@ kind = "class"
 module = "vllm/v1/worker/gpu_model_runner.py"
 symbol = "GPUModelRunner.may_reinitialize_input_batch"
 present = true
-fingerprint = "sha256:c848a818701abc96fb1196e8c23ec0de4a34438865c462cbefbf12d44b4fb30b"
+fingerprint = "sha256:8e465bc8ebf9df3addc982adce665db1b312146a6de902875fcc6dfb6d48f653"
 
 [[patch_target]]
 name = "vllm.v1.worker.gpu_worker.Worker._scoped_allocator_max_split"

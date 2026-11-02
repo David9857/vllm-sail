@@ -17,6 +17,17 @@ HELP = "Commands: " + ", ".join(f"`{command}`" for command in COMMANDS)
 READY = {"ready", "ready-run-all-tests"}
 WRITE = {"write", "maintain", "admin"}
 WORKFLOW = "ppu-pr-ci.yaml"
+TREE_MODES = "100644:blob 100755:blob 120000:blob 040000:tree 160000:commit".split()
+CI_REUSE_FILES = set(
+    f".github/workflows/{WORKFLOW} .github/workflows/ppu-build-and-test.yaml "
+    ".github/workflows/_ppu-build.yaml .github/workflows/_ppu-pin-ut.yaml "
+    ".github/workflows/_ppu-model-tests.yaml scripts/ci/ppu_ci_command.py".split()
+)
+SKIP_PPU_PREFIXES = ("docs/", ".github/ISSUE_TEMPLATE/")
+SKIP_PPU_FILES = set(
+    ".github/pull_request_template.md .gitignore .pre-commit-config.yaml AGENTS.md "
+    "CONTRIBUTING.md LICENSE README.md codecov.yml".split()
+)
 LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?"
 TITLE = re.compile(
     rf"PPU PR #([1-9][0-9]*) @ ([0-9a-f]{{40}}) by ({LOGIN}) \(comment ([1-9][0-9]*)\)"
@@ -30,6 +41,11 @@ def bot_owned(item):
 
 def marker(comment_id):
     return f"<!-- ppu-ci-command:{comment_id} -->"
+
+
+def valid_repo_path(path):
+    parts = path.split("/") if isinstance(path, str) else ()
+    return bool(parts) and "\x00" not in path and not set(parts) & {"", ".", ".."}
 
 
 def best_effort(operation):
@@ -105,6 +121,7 @@ class Controller:
         self.root = f"/repos/{self.repo}"
         server = self.env.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
         self.url = f"{server}/{self.repo}"
+        self._trees, self._path_cache = {}, {}
         self.trusted = set(
             re.split(r"[,\s]+", self.env.get("CI_TRUSTED_USERS", "").lower())
         )
@@ -187,13 +204,115 @@ class Controller:
     def execution_url(self):
         return f"{self.url}/actions/runs/{self.env['GITHUB_RUN_ID']}/attempts/{self.env.get('GITHUB_RUN_ATTEMPT', '1')}"
 
-    def reusable_wheels(self, sha):
-        # Same trusted workflow revision pins build settings and runtime images.
+    def tree_entries(self, sha):
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("Invalid commit SHA for tree lookup")
+        if sha not in self._trees:
+            data = self.api("GET", f"/git/trees/{sha}", params={"recursive": 1})
+            entries = data.get("tree") if isinstance(data, dict) else None
+            if not isinstance(entries, list) or data.get("truncated") is not False:
+                raise ValueError("Incomplete Git tree")
+            tree, seen = {}, set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise ValueError("Malformed Git tree entry")
+                path, kind = entry.get("path"), entry.get("type")
+                value = (entry.get("mode"), kind, entry.get("sha"))
+                if not valid_repo_path(path) or path in seen:
+                    raise ValueError("Malformed Git tree entry")
+                if not all(isinstance(item, str) for item in value):
+                    raise ValueError("Malformed Git tree entry")
+                if f"{value[0]}:{kind}" not in TREE_MODES:
+                    raise ValueError("Malformed Git tree entry")
+                if not re.fullmatch(r"[0-9a-f]{40}", value[2]):
+                    raise ValueError("Malformed Git tree entry")
+                seen.add(path)
+                if kind != "tree":
+                    tree[path] = value
+            self._trees[sha] = tree
+        return self._trees[sha]
+
+    def trees_match(self, left, right, predicate):
+        left, right = self.tree_entries(left), self.tree_entries(right)
+        return all(
+            left.get(path) == right.get(path)
+            for path in left.keys() | right.keys()
+            if predicate(path)
+        )
+
+    def changed_paths(self, pr, head_sha):
+        key = (pr["number"], head_sha)
+        if key not in self._path_cache:
+
+            def load():
+                changed = pr.get("changed_files")
+                if type(changed) is not int or not 0 < changed <= 300:
+                    return None
+                files = list(self.pages(f"/pulls/{pr['number']}/files", limit=3))
+                if len(files) != changed:
+                    return None
+                paths = []
+                for file in files:
+                    names = [file.get("filename")]
+                    if file.get("status") == "renamed" or "previous_filename" in file:
+                        names.append(file.get("previous_filename"))
+                    if not all(valid_repo_path(path) for path in names):
+                        return None
+                    paths.extend(names)
+                current = self.api("GET", f"/pulls/{pr['number']}")["head"]["sha"]
+                return paths if current == head_sha else None
+
+            self._path_cache[key] = best_effort(load)
+        return self._path_cache[key]
+
+    def skips_ppu(self, pr, head_sha):
+        paths = self.changed_paths(pr, head_sha)
+        return paths is not None and all(
+            path in SKIP_PPU_FILES or path.startswith(SKIP_PPU_PREFIXES)
+            for path in paths
+        )
+
+    def reusable_wheels(self, pr, sha):
+        no_wheel_prefixes = tuple(
+            "docs/ tests/ benchmarks/ .github/workflows/ scripts/ tools/".split()
+        )
+        wheel_output_ignored = set(
+            "AGENTS.md CONTRIBUTING.md .gitignore .pre-commit-config.yaml".split()
+        )
+        native_files = wheel_output_ignored | set(
+            "LICENSE MANIFEST.in README.md requirements/dev.txt "
+            "requirements/ppu.txt requirements/profiling.txt".split()
+        )
+        native_prefixes = no_wheel_prefixes + ("vllm_sail/",)
+        rebuild_prefixes = ("cmake/", "csrc/")
+        rebuild_files = set(
+            ".github/vllm-main-verified.commit .github/workflows/_ppu-build.yaml "
+            "CMakeLists.txt pyproject.toml requirements/build.txt setup.py "
+            "scripts/ci/build_ppu_wheels.sh scripts/ci/ppu_image_stack.py "
+            "scripts/ci/ppu_wheel_manifest.py vllm_sail/native/manifest.py "
+            "vllm_sail/native/plugin_manifest.py vllm_sail/native/resources.py "
+            "vllm_sail/native/toolchain.py".split()
+        )
+
+        def native_input(path):
+            return path in rebuild_files or path.startswith(rebuild_prefixes)
+
+        def native_safe(path):
+            return not native_input(path) and (
+                path in native_files or path.startswith(native_prefixes)
+            )
+
+        def wheel_output_relevant(path):
+            ignored = path in wheel_output_ignored or path.startswith(no_wheel_prefixes)
+            return not ignored or native_input(path)
+
+        paths = self.changed_paths(pr, sha)
+        native_ok = paths is not None and all(native_safe(path) for path in paths)
         for run in self.find_runs()[:20]:
             if (
                 run.get("status") != "completed"
                 or run.get("conclusion") != "success"
-                or run.get("head_sha") != self.env["GITHUB_SHA"]
+                or not re.fullmatch(r"[0-9a-f]{40}", run.get("head_sha") or "")
                 or not 0 < run["id"] < int(self.env["GITHUB_RUN_ID"])
             ):
                 continue
@@ -201,31 +320,16 @@ class Controller:
                 a["name"] == f"ppu-wheels-{run['id']}" and a.get("expired") is False
                 for a in self.pages(f"/actions/runs/{run['id']}/artifacts", "artifacts")
             ):
-                continue  # Reuse-only executors are not wheel producers.
+                continue
             source = TITLE.fullmatch(run["display_title"])[2]
-            if source != sha:
-                diff = self.api("GET", f"/compare/{source}...{sha}")
-                files = diff["files"]
-                if (
-                    diff["status"] not in {"ahead", "identical"}
-                    or diff["merge_base_commit"]["sha"] != source
-                    or not isinstance(files, list)
-                    or len(files) >= 300
-                ):
-                    continue
-                # Wheel-only allowlist: unknown inputs and either rename end rebuild.
-                paths = []
-                for file in files:
-                    paths.append(file["filename"])
-                    if file.get("status") == "renamed" or "previous_filename" in file:
-                        paths.append(file["previous_filename"])
-                if any(
-                    not path.startswith(("docs/", "tests/", ".github/workflows/"))
-                    and path != "scripts/ci/ppu_ci_command.py"
-                    for path in paths
-                ):
-                    continue
-            return str(run["id"]), source
+            source_matches = self.trees_match(source, sha, wheel_output_relevant)
+            if source_matches and self.trees_match(
+                run["head_sha"], self.env["GITHUB_SHA"], CI_REUSE_FILES.__contains__
+            ):
+                return "full", str(run["id"]), source
+            if native_ok and self.trees_match(source, sha, native_input):
+                return "native", str(run["id"]), sha
+        return "none", "", ""
 
     def find_runs(self, pr=None, head_sha=None):
         query = (
@@ -464,16 +568,21 @@ class Controller:
             "pending",
             f"Running (attempt {self.env.get('GITHUB_RUN_ATTEMPT', '1')})",
         )
-        build, source = best_effort(
-            lambda: self.reusable_wheels(inputs["head_sha"])
-        ) or ("", "")
-        print(
-            f"Wheel reuse: run={build}, source={source}"
-            if build
-            else "Wheel reuse unavailable: full build"
-        )
+        skip = best_effort(lambda: self.skips_ppu(pr, inputs["head_sha"])) is True
+        mode, build, source = ("skip", "", "")
+        if not skip:
+            mode, build, source = best_effort(
+                lambda: self.reusable_wheels(pr, inputs["head_sha"])
+            ) or ("none", "", "")
+        print(f"Wheel reuse: mode={mode}, run={build}, source={source}")
+        existing = build if mode == "full" else ""
+        native = build if mode == "native" else ""
         with open(self.env["GITHUB_OUTPUT"], "a") as output:
-            output.write(f"existing_build_run_id={build}\nwheel_source_sha={source}\n")
+            output.write(
+                f"skip_ppu={'true' if skip else 'false'}\n"
+                f"existing_build_run_id={existing}\n"
+                f"native_reuse_run_id={native}\nwheel_source_sha={source}\n"
+            )
 
     def report(self):
         inputs = self.inputs()
@@ -481,7 +590,10 @@ class Controller:
         results = {
             stage: needs.get(stage, {}).get("result") for stage in ("validate", "ppu")
         }
+        skipped = needs.get("validate", {}).get("outputs", {}).get("skip_ppu") == "true"
         state, description = "success", "Passed"
+        if skipped and all(result == "success" for result in results.values()):
+            description = "Skipped (no PPU-impacting changes)"
         if "cancelled" in results.values():
             state, description = "error", "Cancelled"
         elif any(result != "success" for result in results.values()):

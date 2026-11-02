@@ -44,8 +44,8 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
     are skipped here. ``embed_tokens``/``lm_head`` are aliased from the target.
     """
     first_layer = self.model.layers[0]
-    use_mega_moe = first_layer.ffn.use_mega_moe
-    if use_mega_moe:
+    use_native_mega_moe = first_layer.ffn.use_native_mega_moe
+    if use_native_mega_moe:
         expert_mapping = make_deepseek_v4_expert_params_mapping(
             self.config.n_routed_experts
         )
@@ -78,6 +78,13 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
     params_dict = dict(self.named_parameters())
     loaded_params: set[str] = set()
     # PPU MODIFICATION: begin
+    # 0.31 keeps a cross-layer ``context_wkv_proj`` that the checkpoint does
+    # not contain: every draft layer's ``mtp.{i}.attn.wkv.*`` must be
+    # duplicated into it (carrying ``shard_id=i``) and loaded separately.
+    # Without this the draft model runs on uninitialised context-KV weights
+    # and the acceptance rate collapses to ~0.
+    loaded_confidence_head = False
+    weights = _duplicate_context_wkv_weights(weights, len(self.model.layers))
 
     # Detect non-expert scale suffix from actual model parameters.
     # INT8/FP8 channelwise quant registers .weight_scale; FP8 block
@@ -96,17 +103,16 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
             break
     # PPU MODIFICATION: end
 
-    tp_size = get_tensor_model_parallel_world_size()
-    tp_rank = get_tensor_model_parallel_rank()
-    n_local_head = self.config.num_attention_heads // tp_size
-    head_start = n_local_head * tp_rank
-    head_end = n_local_head * (tp_rank + 1)
-
     for name, loaded_weight in weights:
         mapped = self._remap_dspark_name(name)
         if mapped is None:
             continue
         name = mapped
+
+        # PPU MODIFICATION: begin
+        if "confidence_head." in name:
+            loaded_confidence_head = True
+        # PPU MODIFICATION: end
 
         # ``.scale`` -> per-method scale suffix.
         if name.endswith(".scale"):
@@ -118,12 +124,31 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                 # PPU MODIFICATION: end
             )
             name = name.removesuffix(".scale") + suffix
+        if ".shared_experts." in name:
+            experts = self.model.layers[extract_layer_index(name)].ffn.experts
+            if getattr(experts, "has_fused_shared_experts", False):
+                loaded_params.add(
+                    experts.load_shared_expert_weight(name, loaded_weight)
+                )
+                continue
         if ".shared_experts.w2" in name:
             name = name.replace(".shared_experts.w2", ".shared_experts.down_proj")
         if self.pad_shared_expert and ".shared_experts." in name:
             loaded_weight = DeepseekV4Model._pad_shared_expert_weight(
                 self.quant_config, name, loaded_weight
             )
+
+        # PPU MODIFICATION: begin
+        # ``context_wkv_proj`` is a MergedColumnParallelLinear whose shards are
+        # produced by ``_duplicate_context_wkv_weights``; the destination shard
+        # rides on the tensor as ``loaded_weight.shard_id``. Falling through to
+        # the default loader would overwrite every shard with the last one.
+        if name.startswith("model.context_wkv_proj."):
+            param = params_dict[name]
+            param.weight_loader(param, loaded_weight, loaded_weight.shard_id)
+            loaded_params.add(name)
+            continue
+        # PPU MODIFICATION: end
 
         # E8M0 expert scales: keep raw exponent bytes.
         if ".experts." in name:
@@ -160,11 +185,6 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
             loaded_params.add(name)
             break
         else:
-            if "attn_sink" in name:
-                narrow = loaded_weight[head_start:head_end]
-                params_dict[name][: narrow.shape[0]].copy_(narrow)
-                loaded_params.add(name)
-                continue
             if name.endswith(".ffn.gate.bias"):
                 name = name.replace(
                     ".ffn.gate.bias", ".ffn.gate.e_score_correction_bias"
@@ -174,7 +194,12 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
             weight_loader(param, loaded_weight)
             loaded_params.add(name)
 
-    self._finalize_moe()
+    # PPU MODIFICATION: begin
+    # The checkpoint may not ship confidence-head weights; drop the randomly
+    # initialised module so acceptance estimation never consumes garbage.
+    if self.model.confidence_head is not None and not loaded_confidence_head:
+        self.model.confidence_head = None
+    # PPU MODIFICATION: end
     logger.info_once("DSpark draft model loaded: %d params", len(loaded_params))
     return loaded_params
 

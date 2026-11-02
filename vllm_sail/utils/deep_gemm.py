@@ -206,6 +206,7 @@ _bf16_gemm_nt_impl: Callable[..., Any] | None = None
 _bf16_grouped_nopad_impl: Callable[..., Any] | None = None
 _bf16_grouped_masked_impl: Callable[..., Any] | None = None
 _fp4_grouped_nopad_impl: Callable[..., Any] | None = None
+_fp4_grouped_fused_impl: Callable[..., Any] | None = None
 _fp4_grouped_masked_impl: Callable[..., Any] | None = None
 _w4a16_grouped_nopad_impl: Callable[..., Any] | None = None
 _w4a16_grouped_fused_impl: Callable[..., Any] | None = None
@@ -229,6 +230,11 @@ _set_compile_mode_impl: Callable[..., Any] | None = None
 _get_compile_mode_impl: Callable[..., Any] | None = None
 _moe_align_block_size_impl: Callable[..., Any] | None = None
 
+# fused activation (+ optional quant)
+_activation_quant_mode_impl: Any | None = None
+_silu_and_mul_impl: Callable[..., Any] | None = None
+_situ_and_mul_impl: Callable[..., Any] | None = None
+
 
 def _lazy_init() -> None:
     """Import deep_gemm and resolve symbols on first use."""
@@ -239,7 +245,7 @@ def _lazy_init() -> None:
     global _int8_grouped_nopad_impl, _int8_grouped_masked_impl
     global _bf16_gemm_nt_impl
     global _bf16_grouped_nopad_impl, _bf16_grouped_masked_impl
-    global _fp4_grouped_nopad_impl, _fp4_grouped_masked_impl
+    global _fp4_grouped_nopad_impl, _fp4_grouped_fused_impl, _fp4_grouped_masked_impl
     global \
         _w4a16_grouped_nopad_impl, \
         _w4a16_grouped_fused_impl, \
@@ -254,6 +260,7 @@ def _lazy_init() -> None:
     global _get_mk_alignment_for_contiguous_layout_impl
     global _transform_sf_into_required_layout_impl
     global _moe_align_block_size_impl
+    global _activation_quant_mode_impl, _silu_and_mul_impl, _situ_and_mul_impl
 
     # fast path
     if (
@@ -269,6 +276,7 @@ def _lazy_init() -> None:
         or _bf16_grouped_nopad_impl is not None
         or _bf16_grouped_masked_impl is not None
         or _fp4_grouped_nopad_impl is not None
+        or _fp4_grouped_fused_impl is not None
         or _fp4_grouped_masked_impl is not None
         or _w4a16_grouped_nopad_impl is not None
         or _w4a16_grouped_fused_impl is not None
@@ -284,6 +292,7 @@ def _lazy_init() -> None:
         or _get_mk_alignment_for_contiguous_layout_impl is not None
         or _transform_sf_into_required_layout_impl is not None
         or _moe_align_block_size_impl is not None
+        or _silu_and_mul_impl is not None
     ):
         return
 
@@ -338,6 +347,7 @@ def _lazy_init() -> None:
         _dg, "m_grouped_gemm_bf16_bf16_bf16_nt_masked", None
     )
     _fp4_grouped_nopad_impl = getattr(_dg, "m_grouped_gemm_fp4_fp4_bf16_nt_nopad", None)
+    _fp4_grouped_fused_impl = getattr(_dg, "m_grouped_gemm_fp4_fp4_bf16_nt_fused", None)
     _fp4_grouped_masked_impl = getattr(
         _dg, "m_grouped_gemm_fp4_fp4_bf16_nt_masked", None
     )
@@ -347,6 +357,9 @@ def _lazy_init() -> None:
     _get_compile_mode_impl = getattr(_dg, "get_compile_mode", None)
     _set_compile_mode_impl = getattr(_dg, "set_compile_mode", None)
     _moe_align_block_size_impl = getattr(_dg, "moe_align_block_size", None)
+    _activation_quant_mode_impl = getattr(_dg, "ActivationQuantMode", None)
+    _silu_and_mul_impl = getattr(_dg, "silu_and_mul", None)
+    _situ_and_mul_impl = getattr(_dg, "situ_and_mul", None)
     DeepGemmQuantScaleFMT.init_oracle_cache()
 
 
@@ -457,6 +470,13 @@ def m_grouped_fp4_gemm_nt_nopad(*args, **kwargs):
     return _fp4_grouped_nopad_impl(*args, **kwargs)
 
 
+def m_grouped_fp4_gemm_nt_fused(*args, **kwargs):
+    _lazy_init()
+    if _fp4_grouped_fused_impl is None:
+        return _missing(*args, **kwargs)
+    return _fp4_grouped_fused_impl(*args, **kwargs)
+
+
 def fp4_m_grouped_gemm_nt_masked(*args, **kwargs):
     _lazy_init()
     if _fp4_grouped_masked_impl is None:
@@ -504,6 +524,42 @@ def moe_align_block_size(*args, **kwargs):
     if _moe_align_block_size_impl is None:
         return _missing(*args, **kwargs)
     return _moe_align_block_size_impl(*args, **kwargs)
+
+
+def has_fused_act_quant() -> bool:
+    """Whether DeepGEMM exposes the fused activation(+quant) kernels.
+
+    Older DeepGEMM builds only ship the activation inside the GEMM epilogue and
+    therefore lack the standalone `silu_and_mul` / `situ_and_mul` entry points.
+    """
+    _lazy_init()
+    return (
+        _activation_quant_mode_impl is not None
+        and _silu_and_mul_impl is not None
+        and _situ_and_mul_impl is not None
+    )
+
+
+def get_activation_quant_mode() -> Any:
+    """Return DeepGEMM's `ActivationQuantMode` enum."""
+    _lazy_init()
+    if _activation_quant_mode_impl is None:
+        return _missing()
+    return _activation_quant_mode_impl
+
+
+def silu_and_mul(*args, **kwargs):
+    _lazy_init()
+    if _silu_and_mul_impl is None:
+        return _missing(*args, **kwargs)
+    return _silu_and_mul_impl(*args, **kwargs)
+
+
+def situ_and_mul(*args, **kwargs):
+    _lazy_init()
+    if _situ_and_mul_impl is None:
+        return _missing(*args, **kwargs)
+    return _situ_and_mul_impl(*args, **kwargs)
 
 
 def fp8_mqa_logits(
@@ -949,6 +1005,12 @@ def should_use_deepgemm_for_bf16_linear(
     must fall back to acblas (``F.linear``) to avoid the extra elementwise
     add overhead.  Otherwise (no bias) callers can use DeepGEMM when all
     conditions are satisfied.
+
+    The BF16 dense NT kernel tiles ``N`` in pairs and rejects an odd ``N``
+    at JIT time (``BF16 dense GEMM requires even N``).  Every odd ``N`` --
+    including ``N == 1``, which the kernel does not specialise (e.g. the 1-D
+    Kimi-K3 AttnRes projections) -- is rejected here so it falls back to
+    acblas instead of failing inside the kernel.
     """
     if bias is not None:
         return False
@@ -968,6 +1030,7 @@ def should_use_deepgemm_for_bf16_linear(
         x.dtype == torch.bfloat16
         and weight.dtype == torch.bfloat16
         and weight.dim() == 2
+        and weight.shape[0] % 2 == 0
         and x.is_contiguous()
         and weight.is_contiguous()
     )
@@ -1127,6 +1190,7 @@ __all__ = [
     "m_grouped_bf16_gemm_nt_nopad",
     "bf16_m_grouped_gemm_nt_masked",
     "m_grouped_fp4_gemm_nt_nopad",
+    "m_grouped_fp4_gemm_nt_fused",
     "fp4_m_grouped_gemm_nt_masked",
     "m_grouped_w4a16_gemm_nt_nopad",
     "m_grouped_w4a16_gemm_nt_fused",
@@ -1150,4 +1214,8 @@ __all__ = [
     "get_col_major_tma_aligned_tensor",
     "get_mk_alignment_for_contiguous_layout",
     "moe_align_block_size",
+    "has_fused_act_quant",
+    "get_activation_quant_mode",
+    "silu_and_mul",
+    "situ_and_mul",
 ]

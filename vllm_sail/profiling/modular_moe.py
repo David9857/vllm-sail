@@ -15,12 +15,12 @@ _original = _modular.FusedMoEKernelModularImpl.apply
     _modular.__name__,
     "FusedMoEKernelModularImpl.apply",
     reason="Opt-in PPU profiling includes modular MoE dispatch.",
-    affected_versions=">=0.31.0,<0.32.0",
+    affected_versions=">=0.32.0,<0.33.0",
     remove_when="Upstream exposes equivalent per-dispatch MoE tracing.",
 )
 @functools.wraps(_original)
-def apply(self, hidden_states, w1, w2, topk_weights, topk_ids, *args, **kwargs):
+def apply(self, hidden_states, w1, w2, topk_ids, topk_weights, *args, **kwargs):
     with moe_range(hidden_states, w1, topk_ids):
         return _original(
-            self, hidden_states, w1, w2, topk_weights, topk_ids, *args, **kwargs
+            self, hidden_states, w1, w2, topk_ids, topk_weights, *args, **kwargs
         )

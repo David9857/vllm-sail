@@ -17,7 +17,7 @@ from vllm_sail.patch.utils import PATCH_MARKER, patch
 _MODULE = "vllm.model_executor.layers.fused_moe.all2all_utils"
 _META = dict(
     reason="The all-to-all factory needs PPU DeepEP quantized dispatch and completion support.",
-    affected_versions=">=0.31.0,<0.32.0",
+    affected_versions=">=0.32.0,<0.33.0",
     remove_when="The prepare/finalize factory supports plugin backend registration.",
 )
 
@@ -35,6 +35,10 @@ def _maybe_make_prepare_finalize_body(
     all2all_manager: Any | None = None,
     input_dtype: torch.dtype | None = None,
 ) -> FusedMoEPrepareAndFinalize | None:
+    if moe.moe_parallel_config.use_passthrough_all2all:
+        # The experts dispatch and combine themselves, in every EP topology.
+        return PassThroughPrepareAndFinalize()
+
     if not moe.moe_parallel_config.use_all2all_kernels:
         if not allow_new_interface:
             return None
@@ -198,14 +202,24 @@ def _maybe_make_prepare_finalize_body(
     elif moe.use_mori_kernels:
         assert quant_config is not None
 
+        # MXFP4 activations are dispatched as packed FP4 with their e8m0
+        # block scales, which the experts consume without re-quantizing.
+        use_fp4_dispatch = quant_config.use_mxfp4_w4a4
         # Note: We may want to use FP8 dispatch just to reduce
         # data movement.
-        use_fp8_dispatch = (
+        use_fp8_dispatch = not use_fp4_dispatch and (
             quant_config.is_per_act_token
             or quant_config.is_block_quantized
             or quant_config.is_per_tensor
         )
-        if use_fp8_dispatch:
+        if use_fp4_dispatch:
+            # One e8m0 scale per 32-element block. token_hidden_size stays
+            # the unpacked hidden size: mori sizes its token buffers by the
+            # BF16 input type, which also covers the BF16 combine.
+            quant_dtype = torch.float4_e2m1fn_x2
+            scale_dim = moe.hidden_dim // 32
+            scale_type_size = torch.float8_e8m0fnu.itemsize
+        elif use_fp8_dispatch:
             # For PTPC (per token per channel) or per-tensor quant,
             # scale dim is 1. For 1x128 quant, scale dim is
             # hidden_dim // 128
@@ -215,18 +229,20 @@ def _maybe_make_prepare_finalize_body(
                 if (quant_config.is_per_act_token or quant_config.is_per_tensor)
                 else moe.hidden_dim // 128
             )
+            scale_type_size = torch.float32.itemsize
         else:
             # Unquantized dispatch (e.g. AITER with defer_input_quant):
             # dispatch raw BF16/FP16 data, no scales needed.
             quant_dtype = moe.in_dtype
             scale_dim = 0
+            scale_type_size = 0
         all_to_all_args = dict(
             rank=all2all_manager.rank,
             num_ep_ranks=all2all_manager.world_size,
             quant_dtype=quant_dtype,
             token_hidden_size=moe.hidden_dim,
             scale_dim=scale_dim,
-            scale_type_size=0 if scale_dim == 0 else torch.float32.itemsize,
+            scale_type_size=scale_type_size,
             max_num_tokens_per_dp_rank=moe.max_num_tokens,
             input_dtype=moe.in_dtype,
             num_local_experts=moe.num_experts // all2all_manager.world_size,
@@ -239,6 +255,7 @@ def _maybe_make_prepare_finalize_body(
             max_tokens_per_rank=moe.max_num_tokens,
             num_dispatchers=all2all_manager.world_size,
             use_fp8_dispatch=use_fp8_dispatch,
+            use_fp4_dispatch=use_fp4_dispatch,
         )
 
     elif moe.use_fi_nvl_two_sided_kernels:
@@ -261,8 +278,8 @@ def _maybe_make_prepare_finalize_body(
             num_experts=moe.num_experts,
             hidden_size=moe.hidden_dim,
             num_dispatchers=all2all_manager.world_size,
-            x_bytes_per_token=dispatch_layout.x_bytes_per_token,
-            x_sf_bytes_per_token=dispatch_layout.x_sf_bytes_per_token,
+            dispatch_format=dispatch_layout.dispatch_format,
+            extra_payload_bytes_per_token=dispatch_layout.extra_payload_bytes_per_token,
         )
 
     elif moe.use_ag_rs_all2all_kernels and allow_new_interface:
@@ -341,6 +358,7 @@ _CONSUMERS = {
         "vllm.model_executor.layers.fused_moe.oracle.mxfp4",
         "vllm.model_executor.layers.fused_moe.oracle.int8",
         "vllm.model_executor.layers.quantization.utils.humming.moe",
+        "vllm.model_executor.layers.quantization.modelopt_block_quant",
     ],
     "maybe_roundup_layer_hidden_size": [],
 }

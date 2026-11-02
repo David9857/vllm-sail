@@ -11,7 +11,7 @@ Use an SDK environment with the following components installed together:
 | Component | Requirement |
 | --- | --- |
 | SAIL SDK | Driver, HGGC headers, runtime libraries and `hgcc` compiler |
-| SAIL PyTorch | A PPU build with `.ppu_compat/compatible_wrapper.h` |
+| SAIL PyTorch | A PPU build of PyTorch from the SAIL fork |
 | Triton | The [Triton for SAIL](https://github.com/t-head/triton-for-sail) build matching your SDK |
 | Compute libraries | PPU builds of `acext`, `deep_gemm`, `flash_attn` and `flash_attn_3`, as needed by the selected backend |
 | Model-specific libraries | PPU FlashMLA, PLA, TileLang or DeepEP when required by the workload |
@@ -44,18 +44,44 @@ quoting prevents the shell from interpreting the semicolon as a command boundary
 
 ## 2. Install matching vLLM
 
+### Build both wheels
+
+In the activated SAIL SDK / SAIL PyTorch environment, run from the vLLM SAIL
+checkout on Linux (Bash 4+, Python 3.10–3.13):
+
+```bash
+BUILD_JOBS=8 bash scripts/build_wheels.sh --output-dir /path/to/new-wheelhouse
+```
+
+The script builds the commit in `.github/vllm-main-verified.commit` with
+`VLLM_TARGET_DEVICE=empty`, including its Rust frontend and parser, then builds
+vllm-sail. It installs build dependencies and the new vLLM wheel into the active
+environment while preserving SDK package versions; runtime dependencies and the
+final vllm-sail wheel are not installed.
+
+The output directory must be empty; the default is `artifacts/local-<run>/`.
+It contains both wheels under `wheels/`, source commits and hashes in
+`wheels/wheel-manifest.json`, and build logs under `logs/`. See `--help` for
+SDK, mirror and parallelism options. Continue with step 4 for runtime checks.
+
+### Install a separately supplied vLLM build
+
 Install a vLLM build with `VLLM_TARGET_DEVICE=empty` in the same environment.
 This lets the PPU plugin provide the native operations used by the engine.
-The plugin accepts `>=0.31.0,<0.32.0`; its generated upstream kernel sources use
-**v0.31.0** as the reproducible source baseline.
+The supported release line is `>=0.32.0,<0.33.0`. Build the exact upstream commit
+recorded in [the verified pin](../../.github/vllm-main-verified.commit) and
+[kernel manifest](../../csrc/upstream/manifest.toml); both records must agree.
+**v0.32.0** is the release baseline for this line.
 
 Use a matching wheel supplied with your PPU environment, or build that upstream
-release from source. For a source build, first prepare vLLM's build and runtime
-dependencies using the SDK's package constraints. Then run from the vLLM checkout:
+source pin. For a source build, prepare vLLM's build and runtime dependencies
+using the SDK's package constraints, including the Rust toolchain required by
+that checkout. Then run from the vLLM checkout:
 
 ```bash
 python tools/use_existing_torch.py
-VLLM_TARGET_DEVICE=empty python -m pip install --no-build-isolation --no-deps .
+VLLM_REQUIRE_RUST_FRONTEND=1 VLLM_TARGET_DEVICE=empty \
+  python -m pip install --no-build-isolation --no-deps .
 ```
 
 The upstream helper removes dependency pins that would replace the active torch
@@ -125,7 +151,7 @@ a model; continue with the [quickstart](quickstart.md) and
 
 | Symptom | Next step |
 | --- | --- |
-| Build fails before CMake configuration | Check SAIL PyTorch, its compatibility header, `hgcc` and CMake. Native extensions are required by default. |
+| Build fails before CMake configuration | Check that PyTorch is importable and that `hgcc` and CMake are available. Native extensions are required by default. |
 | Build unexpectedly produces a `py3-none-any` wheel | Unset `VLLM_SAIL_SKIP_EXT`; it is the only Python-only build path. |
 | CMake cannot fetch the HG language modules | Restore network access or set `CMAKE_HGCC_DIR` to an existing cmake-hgcc checkout. |
 | Architectures disagree | Set `PYTORCH_SAIL_ARCH`; unset `VLLM_SAIL_HG_ARCH` or make both settings use the same targets. |

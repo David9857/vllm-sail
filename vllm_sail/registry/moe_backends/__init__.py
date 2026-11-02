@@ -8,13 +8,13 @@ from vllm_sail.registry.moe_backends._extend import extend_enum
 __all__ = ["extend_enum", "register"]
 
 _registered = False
-_AFFECTED = ">=0.31.0,<0.32.0"
+_AFFECTED = ">=0.32.0,<0.33.0"
 _REMOVE_WHEN = (
     "vLLM imports MoE selectors through a registration API instead of "
     "capturing module-level aliases before plugin registration."
 )
 
-# Module-scope consumers captured before plugin registration in vLLM 0.31.
+# Module-scope consumers captured before plugin registration at the pinned vLLM.
 _ORACLE_ALIAS_CONSUMERS = {
     "unquantized": {
         "select_unquantized_moe_backend": (
@@ -66,6 +66,7 @@ _ORACLE_ALIAS_CONSUMERS = {
     },
     "mxfp4": {
         "backend_to_kernel_cls": (
+            "vllm.model_executor.layers.quantization.mxfp4",
             "vllm.model_executor.layers.quantization.quark.quark_moe",
         ),
         "convert_gpt_oss_weight_to_mxfp4_moe_kernel_format": (
@@ -73,6 +74,7 @@ _ORACLE_ALIAS_CONSUMERS = {
             "vllm.model_executor.layers.quantization.quark.quark_moe",
         ),
         "convert_weight_to_mxfp4_moe_kernel_format": (
+            "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_w4a4_mxfp4",
             "vllm.model_executor.layers.quantization.mxfp4",
             "vllm.model_executor.layers.quantization.online.mxfp4",
         ),
@@ -88,13 +90,10 @@ _ORACLE_ALIAS_CONSUMERS = {
             "vllm.model_executor.layers.quantization.online.mxfp4",
             "vllm.model_executor.layers.quantization.quark.quark_moe",
         ),
-        "select_mxfp4_moe_backend": (
-            "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe_w4a4_mxfp4",
-            "vllm.model_executor.layers.quantization.inc.schemes.inc_mxfp4_moe",
-            "vllm.model_executor.layers.quantization.mxfp4",
-            "vllm.model_executor.layers.quantization.online.mxfp4",
-            "vllm.model_executor.layers.quantization.quark.quark_moe",
-        ),
+        # select_mxfp4_moe_backend is absent on purpose: the PPU differences
+        # live in the helpers it calls (map_mxfp4_backend,
+        # backend_to_kernel_cls, _backend_activation_key), so upstream's selector
+        # object is never replaced and a consumer's captured alias stays valid.
         "select_deepseek_v4_mxfp4_moe_backend": (
             "vllm.model_executor.layers.quantization.mxfp4",
         ),

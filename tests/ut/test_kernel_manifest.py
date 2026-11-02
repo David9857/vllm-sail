@@ -60,9 +60,15 @@ def shipped() -> m.Manifest:
     return m.load()
 
 
-def test_upstream_ref_pins_a_vllm_tag(shipped: m.Manifest) -> None:
-    """Without a pinned ref, drift detection after a vLLM bump is impossible."""
-    assert shipped.upstream_ref.strip()
+def test_upstream_ref_matches_the_verified_vllm_commit(shipped: m.Manifest) -> None:
+    """Runtime compatibility and CI must select the same upstream source."""
+    pin = (
+        (Path(__file__).parents[2] / ".github/vllm-main-verified.commit")
+        .read_text()
+        .strip()
+    )
+    assert re.fullmatch(r"[0-9a-f]{40}", shipped.upstream_ref)
+    assert shipped.upstream_ref == pin
 
 
 def test_every_tier_and_hazard_is_declared(shipped: m.Manifest) -> None:
@@ -151,11 +157,15 @@ def test_rename_extension_targets_match_the_cmake_and_python_module_names(
     [
         (
             "csrc/libtorch_stable/cache_kernels.cu",
-            "csrc/upstream/libtorch_stable/cache_kernels.cu",
+            "csrc/upstream/libtorch_stable/cache_kernels.hg",
         ),
         (
             "csrc/libtorch_stable/moe/moe_wna16.cu",
-            "csrc/upstream/libtorch_stable/moe/moe_wna16.cu",
+            "csrc/upstream/libtorch_stable/moe/moe_wna16.hg",
+        ),
+        (
+            "csrc/libtorch_stable/torch_bindings.cpp",
+            "csrc/upstream/libtorch_stable/torch_bindings.cpp",
         ),
     ],
 )
@@ -165,7 +175,7 @@ def test_vendored_path_mirrors_upstream_layout(path: str, vendored: str) -> None
 
 def test_is_moe_is_exactly_the_moe_subtree(shipped: m.Manifest) -> None:
     for entry in shipped:
-        assert entry.is_moe == entry.path.startswith("csrc/libtorch_stable/moe/")
+        assert entry.is_moe == entry.path.startswith("csrc/moe/")
 
 
 def test_compiled_sources_partition_the_compiled_entries(shipped: m.Manifest) -> None:
@@ -179,14 +189,14 @@ def test_compiled_sources_partition_the_compiled_entries(shipped: m.Manifest) ->
     assert sources and moe_sources
 
 
-def test_every_vendored_cu_source_is_compiled(shipped: m.Manifest) -> None:
-    """A normal native build must not silently omit a vendored CUDA-shaped TU."""
+def test_every_vendored_hg_source_is_compiled(shipped: m.Manifest) -> None:
+    """A normal native build must not silently omit a vendored device TU."""
     root = Path(__file__).parents[2]
     sources, moe_sources = shipped.compiled_sources()
-    configured = {path for path in (*sources, *moe_sources) if path.endswith(".cu")}
+    configured = {path for path in (*sources, *moe_sources) if path.endswith(".hg")}
     vendored = {
         path.relative_to(root).as_posix()
-        for path in (root / "csrc" / "upstream").rglob("*.cu")
+        for path in (root / "csrc" / "upstream").rglob("*.hg")
     }
 
     assert configured == vendored
@@ -237,7 +247,7 @@ def test_model_kernel_dependencies_are_compiled_and_bound(shipped, op):
     """Check the generated registration as well as the requested build set."""
     assert op in shipped.ops(shipped.compiled())
     root = Path(__file__).parents[2]
-    bindings = (root / "csrc/upstream/libtorch_stable/torch_bindings.cpp").read_text()
+    bindings = (root / "csrc/upstream/torch_bindings.cpp").read_text()
     assert f'"{op}(' in bindings or f'"{op}( ' in bindings
     namespace = "_C_cache_ops" if op == "concat_and_cache_mla_rope_fused" else "_C"
     cuda_block = bindings.split(

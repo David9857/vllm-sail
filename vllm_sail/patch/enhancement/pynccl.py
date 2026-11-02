@@ -17,7 +17,7 @@ from vllm.platforms import current_platform
 from vllm_sail.patch.bodies import bind_body
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.31.0,<0.32.0"
+_AFFECTED = ">=0.32.0,<0.33.0"
 _WRAPPER = "vllm.distributed.device_communicators.pynccl_wrapper"
 _COMMUNICATOR = "vllm.distributed.device_communicators.pynccl"
 _upstream_suspend = _pynccl.PyNcclCommunicator.suspend
@@ -93,6 +93,9 @@ def __init__(self, so_file: str | None = None):
                 elif func.name == "ncclCommQueryProperties":
                     # Optional on NCCL versions older than 2.29.
                     continue
+                elif func.name == "ncclGetLastError":
+                    # Only used to enrich error messages.
+                    continue
                 elif func.name in ("ncclCommSuspend", "ncclCommResume"):
                     # RCCL doesn't export these; NCCL >= 2.29.7 does, and
                     # vLLM's CUDA path already requires that version.
@@ -123,8 +126,7 @@ def __init__(self, so_file: str | None = None):
 def suspend(self):
     if current_platform.is_ppu() and not self.disabled and not self._suspended:
         if not all(
-            self.nccl.has_symbol(name)
-            for name in ("ncclCommSuspend", "ncclCommResume")
+            self.nccl.has_symbol(name) for name in ("ncclCommSuspend", "ncclCommResume")
         ):
             _pynccl.logger.warning_once(
                 "PCCL does not export both ncclCommSuspend and ncclCommResume; "

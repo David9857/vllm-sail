@@ -19,7 +19,8 @@ BOOL_DEFAULTS = {
     "USE_OPT_TOKEN_GROUP_QUANT": False,
     "DENSE_BF16_DEEPGEMM": False,
     "USE_PLA": True,
-    "DEEPGEMM_MOE_TP_FUSED": True,
+    "DEEPGEMM_MOE_TP_FUSED": False,
+    "DEEPGEMM_MOE_FUSED_ACT_QUANT": False,
     "FUSED_GDN_DECODE": True,
     "DISABLE_MOE_WNA16_CUDA": False,
     "FORCE_MOE_WNA16_CUDA": False,
@@ -31,6 +32,9 @@ BOOL_DEFAULTS = {
     "NVTX_VFA_DUMP_SEQLEN": False,
 }
 BACKENDS = ("MOE_BACKEND", "DENSE_BACKEND")
+# String env vars with a non-None default and no legacy VLLM_PPU_* alias.
+STRING_DEFAULTS = {"KPOOL_DECODE_LOGITS": "non_paged"}
+INT_DEFAULTS = {"KPOOL_MAX_DENSE_POOLS": 1 << 21}
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +46,10 @@ def clean_plugin_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_defaults_and_canonical_snapshot() -> None:
     expected = {f"VLLM_SAIL_{key}": value for key, value in BOOL_DEFAULTS.items()}
     expected.update({f"VLLM_SAIL_{key}": None for key in BACKENDS})
+    expected.update(
+        {f"VLLM_SAIL_{key}": value for key, value in STRING_DEFAULTS.items()}
+    )
+    expected.update({f"VLLM_SAIL_{key}": value for key, value in INT_DEFAULTS.items()})
     expected["VLLM_DEEPEPLL_RECV_HOOK"] = True
     expected["PPU_SDK"] = "/usr/local/PPU_SDK"
     expected["VLLM_GDN_DECODE_KERNEL"] = "auto"

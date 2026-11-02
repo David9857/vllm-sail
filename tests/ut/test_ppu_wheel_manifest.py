@@ -21,7 +21,9 @@ manifest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(manifest)
 
 
-def make_wheels(directory: Path, *, rust: bool = True) -> Path:
+def make_wheels(
+    directory: Path, *, rust: bool = True, parser_bridge: bool = True
+) -> Path:
     for name, version in (("vllm", "0.30.0+empty"), ("vllm_sail", "0.1.dev1")):
         target = directory / name
         target.mkdir(exist_ok=True)
@@ -33,7 +35,10 @@ def make_wheels(directory: Path, *, rust: bool = True) -> Path:
             )
             if name == "vllm" and rust:
                 archive.writestr("vllm/vllm-rs", b"test executable")
-                archive.writestr("vllm/_rust_tool_parser.abi3.so", b"test extension")
+                if parser_bridge:
+                    archive.writestr(
+                        "vllm/_rust_tool_parser.abi3.so", b"test extension"
+                    )
             elif name == "vllm_sail":
                 for module in ("_C", "_moe_C", "_upstream_C", "_upstream_moe_C"):
                     archive.writestr(f"vllm_sail/{module}.abi3.so", b"test extension")
@@ -55,6 +60,27 @@ def test_preserves_real_wheel_versions_and_verifies_hashes(tmp_path: Path) -> No
 
 def test_rejects_missing_rust_even_when_wheel_exists(tmp_path: Path) -> None:
     make_wheels(tmp_path, rust=False)
+    with pytest.raises(ValueError, match="required Rust artifacts"):
+        manifest.wheel_records(tmp_path)
+
+
+def test_accepts_upstream_frontend_without_removed_parser_bridge(
+    tmp_path: Path,
+) -> None:
+    make_wheels(tmp_path, parser_bridge=False)
+    data = record(tmp_path)
+    assert manifest.verify(tmp_path) == data
+
+
+@pytest.mark.parametrize("binary", [None, b""])
+def test_parser_bridge_does_not_replace_required_frontend(
+    tmp_path: Path, binary: bytes | None
+) -> None:
+    wheel = make_wheels(tmp_path, rust=False)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("vllm/_rust_tool_parser.abi3.so", b"test extension")
+        if binary is not None:
+            archive.writestr("vllm/vllm-rs", binary)
     with pytest.raises(ValueError, match="required Rust artifacts"):
         manifest.wheel_records(tmp_path)
 
@@ -154,3 +180,127 @@ def test_cli_records_source_commits(tmp_path: Path, different_owner: bool) -> No
             text=True,
         ).strip()
     )
+
+
+def test_native_fingerprint_only_changes_for_native_inputs(tmp_path: Path) -> None:
+    import shutil
+
+    source = tmp_path / "source"
+    for relative in manifest.NATIVE_INPUTS:
+        original = ROOT / relative
+        target = source / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if original.is_dir():
+            shutil.copytree(original, target)
+        else:
+            shutil.copy2(original, target)
+    first = manifest.native_fingerprint(
+        source, build_image="image@sha256:one", pytorch_sail_arch="ppu_15;ppu_10"
+    )
+    (source / "vllm_sail/runtime.py").parent.mkdir(parents=True, exist_ok=True)
+    (source / "vllm_sail/runtime.py").write_text("python-only change\n")
+    assert (
+        manifest.native_fingerprint(
+            source,
+            build_image="image@sha256:one",
+            pytorch_sail_arch="ppu_15;ppu_10",
+        )
+        == first
+    )
+    assert (
+        manifest.native_fingerprint(
+            source,
+            build_image="image@sha256:one",
+            pytorch_sail_arch="ppu_15;ppu_10",
+            vllm_sail_hg_flags="-O3",
+        )
+        != first
+    )
+    native_file = next((source / "csrc").rglob("*.hg"))
+    native_file.write_text(native_file.read_text() + "\n// changed\n")
+    assert (
+        manifest.native_fingerprint(
+            source,
+            build_image="image@sha256:one",
+            pytorch_sail_arch="ppu_15;ppu_10",
+        )
+        != first
+    )
+    assert (
+        manifest.native_fingerprint(
+            source,
+            build_image="image@sha256:two",
+            pytorch_sail_arch="ppu_15;ppu_10",
+        )
+        != first
+    )
+
+
+def test_extract_native_requires_verified_reuse_metadata(tmp_path: Path) -> None:
+    make_wheels(tmp_path)
+    data = record(tmp_path)
+    with pytest.raises(ValueError, match="predates native reuse metadata"):
+        manifest.extract_native(tmp_path, tmp_path / "out")
+
+    sail_wheel = tmp_path / data["wheels"]["vllm-sail"]["file"]
+    data["native_reuse"] = {
+        "fingerprint": "a" * 64,
+        "extensions": manifest.native_extension_records(sail_wheel),
+    }
+    (tmp_path / manifest.MANIFEST).write_text(json.dumps(data))
+    extracted = tmp_path / "out"
+    assert manifest.extract_native(tmp_path, extracted) == data["native_reuse"]
+    assert {path.name for path in extracted.iterdir()} == {
+        f"{module}.abi3.so" for module in manifest.NATIVE_MODULES
+    }
+
+
+def test_create_accepts_verified_upstream_commit_for_native_repack(
+    tmp_path: Path,
+) -> None:
+    make_wheels(tmp_path)
+    commit = "a" * 40
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "create",
+            str(tmp_path),
+            "--vllm-commit",
+            commit,
+            "--sail-source",
+            str(ROOT),
+            "--build-image",
+            "image@sha256:one",
+            "--pytorch-sail-arch",
+            "ppu_15;ppu_10",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    data = manifest.verify(tmp_path, vllm_commit=commit)
+    assert data["native_reuse"]["extensions"]
+    assert len(data["native_reuse"]["fingerprint"]) == 64
+
+
+def test_verify_rejects_null_native_metadata_and_empty_extensions(
+    tmp_path: Path,
+) -> None:
+    make_wheels(tmp_path)
+    data = record(tmp_path)
+    data["native_reuse"] = None
+    (tmp_path / manifest.MANIFEST).write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="metadata must be an object"):
+        manifest.verify(tmp_path)
+
+    sail = next(tmp_path.rglob("vllm_sail-*.whl"))
+    replacement = tmp_path / "replacement.whl"
+    with zipfile.ZipFile(sail) as source, zipfile.ZipFile(replacement, "w") as target:
+        for name in source.namelist():
+            target.writestr(
+                name, b"" if name == "vllm_sail/_C.abi3.so" else source.read(name)
+            )
+    replacement.replace(sail)
+    with pytest.raises(ValueError, match="empty native extension"):
+        manifest.wheel_records(tmp_path)

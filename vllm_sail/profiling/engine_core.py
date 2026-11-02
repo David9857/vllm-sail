@@ -27,7 +27,7 @@ from vllm.v1.engine.core import EngineCore
 from vllm_sail.patch.utils import patch
 from vllm_sail.profiling import nvtx
 
-_AFFECTED = ">=0.31.0,<0.32.0"
+_AFFECTED = ">=0.32.0,<0.33.0"
 
 _upstream_init = EngineCore.__init__
 _upstream_step = EngineCore.step
@@ -72,9 +72,10 @@ def engine_core_init(self, *args, **kwargs):
     ),
 )
 def step(self):
-    nvtx.prof_iter(self.iteration)
-    nvtx.range_push(f"[prof_range]: iter {self.iteration}")
-    self.iteration += 1
+    iteration = getattr(self, "iteration", 0)
+    nvtx.prof_iter(iteration)
+    nvtx.range_push(f"[prof_range]: iter {iteration}")
+    self.iteration = iteration + 1
     try:
         return _upstream_step(self)
     finally:
@@ -98,9 +99,10 @@ def step(self):
     ),
 )
 def step_with_batch_queue(self):
-    nvtx.prof_iter(self.iteration)
-    nvtx.range_push(f"[prof_range]: iter {self.iteration}")
-    self.iteration += 1
+    iteration = getattr(self, "iteration", 0)
+    nvtx.prof_iter(iteration)
+    nvtx.range_push(f"[prof_range]: iter {iteration}")
+    self.iteration = iteration + 1
     try:
         return _upstream_step_with_batch_queue(self)
     finally:

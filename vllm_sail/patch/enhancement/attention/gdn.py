@@ -14,7 +14,7 @@ from vllm_sail.patch.utils import PATCH_MARKER, patch
 
 _META = dict(
     reason="PPU GDN uses PLA for supported decode/prefill layouts and Triton for other shapes.",
-    affected_versions=">=0.31.0,<0.32.0",
+    affected_versions=">=0.32.0,<0.33.0",
     remove_when="GDN exposes platform backend registration for PLA prefill and recurrent kernels.",
 )
 
@@ -122,6 +122,17 @@ def fused_recurrent_gated_delta_rule_packed_decode(
             f"Packed decode kernel only supports NK=1 (got K={K}, BK={BK})."
         )
     BV = min(triton.next_power_of_2(V), 32)
+    if (
+        K == V == 128
+        and current_platform.is_cuda()
+        and current_platform.is_device_capability_family(100, device_id=dev.index)
+    ):
+        # Tuned on GB300; validated on GB200 and with 148 SMs.
+        # MRv2 decode warmup/graph capture compiles the reachable BV variants.
+        if B * HV <= 64:
+            BV = 4
+        elif initial_state.dtype == torch.float32:
+            BV = 8
     num_stages = 3
     num_warps = 1
 
@@ -492,9 +503,16 @@ _pla_prefill_supported = patch(
 def _resolve_gdn_prefill_backend(
     vllm_config: VllmConfig,
     # PPU MODIFICATION: begin
-) -> tuple[str, Literal["triton", "flashinfer", "cutedsl", "pla"]]:
+) -> tuple[
+    str, Literal["triton", "flashinfer", "cutedsl", "aiter_flydsl", "sycl", "pla"]
+]:
     # PPU MODIFICATION: end
     """Resolve GDN prefill backend.
+
+    The SYCL kernel is chosen when ``requested in ["sycl", "auto"]``, the
+    platform is XPU and ``_xpu_C::gdn_attention`` is built. Unlike the other
+    backends it is a fused whole-layer op, so selecting it also replaces the
+    conv1d and decode kernels, not just prefill.
 
     FlashInfer's GDN prefill kernel is chosen when:
     * ``requested in ["flashinfer", "auto"]``;
@@ -507,6 +525,11 @@ def _resolve_gdn_prefill_backend(
     In-tree CuteDSL GDN prefill kernel is chosen when:
     * "cutedsl" is requested; (opt-in only)
     * Blackwell (SM10.x) with ``head_k_dim == 128``;
+
+    AITER FlyDSL GDN prefill kernels are chosen when:
+    * "aiter_flydsl" is requested, or "auto" is requested on gfx942/gfx950;
+    * ROCm AITER exposes the optimized VK prefill API and FlyDSL kernels;
+    * the model uses BF16 activations with ``head_k_dim == head_v_dim == 128``.
     # PPU MODIFICATION: begin
 
     The PPU pla (FlashQLA) CUDA kernel is chosen when:
@@ -525,6 +548,66 @@ def _resolve_gdn_prefill_backend(
     )
     backend = str(backend_cfg).strip().lower()
 
+    if backend == "sycl" and not current_platform.is_xpu():
+        raise ValueError("GDN prefill backend 'sycl' is only supported on XPU.")
+
+    if current_platform.is_xpu():
+        if backend in ("auto", "sycl") and xpu_gdn_kernel_available():
+            return backend, "sycl"
+        if backend == "sycl":
+            raise ValueError(
+                "GDN prefill backend 'sycl' was requested but "
+                "torch.ops._xpu_C.gdn_attention is not available. Rebuild "
+                "vllm-xpu-kernels with VLLM_GDN_ENABLED."
+            )
+        return backend, "triton"
+
+    head_k_dim = getattr(
+        vllm_config.model_config.hf_text_config, "linear_key_head_dim", None
+    )
+    head_v_dim = getattr(
+        vllm_config.model_config.hf_text_config, "linear_value_head_dim", None
+    )
+
+    if current_platform.is_rocm():
+        if backend == "aiter_flydsl":
+            if not rocm_aiter_ops.is_gdn_flydsl_prefill_available():
+                raise RuntimeError(
+                    "GDN prefill backend 'aiter_flydsl' was requested but the "
+                    "AITER FlyDSL prefill kernels are not importable. Check "
+                    "that VLLM_ROCM_USE_AITER=1, that this is a CDNA 3 or "
+                    "newer GPU, and that the installed AITER exports them."
+                )
+            reasons = _aiter_flydsl_unsupported_reasons(
+                vllm_config, head_k_dim, head_v_dim
+            )
+            if reasons:
+                logger.warning_once(
+                    "GDN prefill backend 'aiter_flydsl' was requested but %s. "
+                    "Falling back to Triton/FLA.",
+                    "; ".join(reasons),
+                )
+                return backend, "triton"
+            return backend, "aiter_flydsl"
+        if backend == "auto":
+            from vllm.platforms.rocm import on_mi3xx
+
+            if (
+                on_mi3xx()
+                and not _aiter_flydsl_unsupported_reasons(
+                    vllm_config, head_k_dim, head_v_dim
+                )
+                and rocm_aiter_ops.is_gdn_flydsl_prefill_available()
+            ):
+                return backend, "aiter_flydsl"
+        return backend, "triton"
+
+    if backend == "aiter_flydsl":
+        raise RuntimeError(
+            "GDN prefill backend 'aiter_flydsl' was requested but it is a ROCm "
+            f"AITER backend and the current platform is {current_platform.device_name}."
+        )
+
     if not current_platform.is_cuda():
         # PPU MODIFICATION: begin
         return backend, "triton"
@@ -534,10 +617,6 @@ def _resolve_gdn_prefill_backend(
             return backend, "pla"
         # PPU MODIFICATION: end
         return backend, "triton"
-
-    head_k_dim = getattr(
-        vllm_config.model_config.hf_text_config, "linear_key_head_dim", None
-    )
 
     supports_flashinfer = False
     supports_cutedsl = False
@@ -596,14 +675,18 @@ def _log_gdn_backend_decision(
             head_k_dim,
         )
         return
+    elif current_platform.is_xpu():
+        return
 
     chosen = {
         "flashinfer": "FlashInfer",
         "cutedsl": "CuteDSL",
+        "aiter_flydsl": "AITER FlyDSL",
         # PPU MODIFICATION: begin
         "pla": "PLA FlashQLA",
         # PPU MODIFICATION: end
         "triton": "Triton/FLA",
+        "sycl": "SYCL",
     }[active_backend]
     logger.info_once(
         "Using %s GDN prefill kernel (requested=%s, head_k_dim=%s).",
@@ -646,6 +729,7 @@ def forward_pla(
     chunk_offsets: torch.Tensor | None = None,
     use_qk_l2norm_in_kernel: bool = True,
     core_attn_out: torch.Tensor | None = None,
+    aiter_prefill_metadata: object | None = None,
 ):
     # PPU MODIFICATION: begin
     from vllm_sail.attention.pla_prefill import get_sail_cuda_pla_prefill_fwd
@@ -730,6 +814,8 @@ def __init__(self) -> None:
         self._forward_method = self.forward_cuda
     elif active_backend == "cutedsl":
         self._forward_method = self.forward_cutedsl
+    elif active_backend == "aiter_flydsl":
+        self._forward_method = self.forward_aiter_flydsl
     # PPU MODIFICATION: begin
     elif active_backend == "pla":
         self._forward_method = self.forward_pla
