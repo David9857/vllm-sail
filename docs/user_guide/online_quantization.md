@@ -1,6 +1,10 @@
 # Loading-time online quantization
 
-vLLM SAIL registers `fp8-to-int8`, `bf16-to-int8`, and `fp8-to-bf16` on PPU.
+On PPU, `--quantization int8` uses the `fp8-to-int8` path for an FP8 checkpoint
+and `bf16-to-int8` for an unquantized BF16 checkpoint. To decode an FP8
+checkpoint to BF16, set `VLLM_SAIL_FP8_TO_BF16=1` without an explicit
+quantization argument. With neither setting, FP8 checkpoints retain native FP8
+loading.
 Conversion runs once after each layer loads; no separate quantized checkpoint or
 complete intermediate BF16 model is required. INT8 execution reuses the existing
 PPU Dense and MoE backends, with dynamic per-token activation quantization.
@@ -8,12 +12,13 @@ PPU Dense and MoE backends, with dynamic per-token activation quantization.
 ## Select a path
 
 ```bash
-vllm serve /path/to/fp8-model --quantization fp8-to-int8 --dtype bfloat16
-vllm serve /path/to/bf16-model --quantization bf16-to-int8 --dtype bfloat16
-vllm serve /path/to/fp8-model --quantization fp8-to-bf16 --dtype bfloat16
+vllm serve /path/to/fp8-model --quantization int8 --dtype bfloat16
+vllm serve /path/to/bf16-model --quantization int8 --dtype bfloat16
+VLLM_SAIL_FP8_TO_BF16=1 vllm serve /path/to/fp8-model --dtype bfloat16
 ```
 
-The Python API accepts the same names through `LLM(quantization=..., dtype="bfloat16")`.
+The Python API uses `LLM(quantization="int8", dtype="bfloat16")` for either
+INT8 path; use the same environment variable for FP8-to-BF16 decoding.
 FP8 sources must declare `quant_method: fp8`, `weight_block_size: [128, 128]`,
 E4M3 weights, and dynamic activations. BF16 sources must be unquantized checkpoints;
 weight loaders reject other storage dtypes before implicit casting. Both paths
@@ -36,7 +41,7 @@ Recipe rules never change the source dtype or replace source scale metadata.
 Embeddings remain outside the Linear/MoE conversion interface.
 
 Bundled policies are versioned JSON files in
-`vllm_sail/model_executor/layers/quantization/online_conversion/recipes/`.
+`vllm_sail/model_executor/layers/quantization/online_quantization/recipes/`.
 They adapt the qlean 0.2.0 layer rules carried by the original implementation;
 the Qwen3.8-27B policy additionally records its offline INT8 reference and model
 shape constraints. These rules are not hardware/model qualification claims.
@@ -46,7 +51,7 @@ against the bundled patterns, case-insensitively. Multiple matches are an error.
 For renamed model directories, choose a bundled ID explicitly:
 
 ```bash
-vllm serve /models/renamed --quantization bf16-to-int8 --dtype bfloat16 \
+vllm serve /models/renamed --quantization int8 --dtype bfloat16 \
   --hf-overrides '{"sail_quantization_recipe":"qwen3_8_27b"}'
 ```
 
@@ -82,17 +87,12 @@ The standalone `int8_quant_config.json` source metadata file is also accepted.
 ## Defaults and compatibility
 
 Installing the plugin does not enable conversion automatically. Explicit quantization
-arguments take precedence over environment policies; `--quantization fp8` retains
-native FP8 behavior. BF16 conversion requires `--quantization bf16-to-int8`.
-
-With no explicit quantization argument, `VLLM_SAIL_FP8_LOAD_POLICY` selects
-`native`, `bf16`, or `int8`. Unset or empty retains native behavior. The corresponding
-`VLLM_PPU_FP8_LOAD_POLICY` alias is accepted; SAIL takes precedence.
-
-If no load policy is set, an explicitly set `VLLM_SAIL_ENABLE_FP8_TO_INT8`
-(or legacy `VLLM_PPU_ENABLE_FP8_TO_INT8`) selects INT8 for `1` and BF16 for `0`.
-Leaving it unset does not change the default. Composition with another upstream
-online quantizer is rejected.
+arguments take precedence over the BF16 load flag; `--quantization fp8` retains
+native FP8 behavior. Unquantized BF16 conversion requires `--quantization int8`.
+For FP8 checkpoints without an explicit argument, only
+`VLLM_SAIL_FP8_TO_BF16=1` changes the load path. Unset or `0` retains
+native FP8 behavior. Composition with another upstream online quantizer is
+rejected.
 
 `--dtype auto` on PPU FP8 checkpoints resolves to BF16, including nested text
 metadata. Explicit BF16 and FP16 activation dtypes remain accepted. Source decoding
@@ -127,34 +127,58 @@ actual checkpoint and TP/EP configuration.
 
 ## Verification
 
+The CPU qlean golden test uses small, deterministic tensors (no serialized
+weights). Its checked-in JSON contains the complete byte hash, shape and dtype
+of each qlean output tensor for Dense and MoE-like projections, covering all
+three conversion routes. It imports and calls the production `dequantize_fp8`
+and `quantize_int8` functions directly; it never imports qlean in CI. Regenerate
+the JSON only on a machine with the pinned qlean version and a PPU using
+`python tests/quantization/online/generate_online_quantization_qlean_golden.py`, and inspect
+the diff before accepting a new baseline. The generation script records its
+qlean, torch, device and input-recipe identity.
+
+The hash test guards conversion math, not model loading, recipe selection or
+backend packing; those have separate tests below. vLLM's PPU loading runs
+post-load conversion on the target device, so CPU parity with the golden is not
+by itself a proof of device parity. Validate the same source tensors on PPU when
+changing conversion math, and rerun online/offline checkpoint comparisons when
+changing loading or recipe behavior.
+
+```bash
+python -m pytest tests/quantization/online/test_online_quantization_qlean_golden.py -q
+```
+
 Dependency-free policy and registration tests:
 
 ```bash
-python -m pytest tests/ut/test_online_conversion.py tests/ut/test_online_recipes.py -q
+python -m pytest tests/ut/test_online_quantization.py tests/ut/test_online_recipes.py -q
 ```
 
 Torch numerical tests and a real two-rank Gloo scale-reduction check:
 
 ```bash
-python -m pytest tests/tensor/test_online_conversion*.py -q
+python -m pytest tests/quantization/online/test_online_quantization_math.py \
+  tests/quantization/online/test_online_quantization_distributed.py -q
 ```
 
-Real vLLM 0.31 CPU parameter/loader tests (device kernels mocked):
+Pinned-vLLM CPU parameter/loader tests (device kernels mocked):
 
 ```bash
-python -m pytest tests/integration/test_online_conversion_loading.py -q
+python -m pytest tests/quantization/online/test_online_quantization_loading.py -q
 ```
 
-Installed PPU environment, with qlean installed for the reference gate:
+Installed PPU environment (qlean is not required):
 
 ```bash
-python -m pytest tests/e2e/test_online_conversion_device.py \
-  tests/e2e/test_online_conversion_qlean.py -q --junitxml=online-conversion.xml
+python -m pytest tests/quantization/online/test_online_quantization_device.py \
+  -q --junitxml=online-quantization.xml
 ```
 
-The qlean gate compares FP8 decoding, INT8 values and scales on the same device and
-records dependency versions. Missing qlean or skipped device tests are not evidence
-of equivalence. Full-model validation must cover Dense and MoE, TP1 and TP2+, recipe
+The committed qlean golden guards the conversion math without installing qlean in
+the test environment. Regenerate it with
+`tests/quantization/online/generate_online_quantization_qlean_golden.py` on a PPU
+machine with qlean when changing the reference. The golden does not prove full-model
+equivalence. Full-model validation must cover Dense and MoE, TP1 and TP2+, recipe
 and fallback selection, eager and graph execution. Compare weights/scales, prefill
 and decode results, generated token IDs and stop reasons under fixed checkpoint
 revisions, prompt IDs, sampling, SDK and backend settings. Run an A/A repeatability

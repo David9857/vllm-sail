@@ -1,0 +1,290 @@
+{
+  "device": "PPU-ZW610",
+  "input_recipe": "tests/quantization/online/online_quantization_golden_inputs.py",
+  "input_recipe_sha256": "6ced190c451090a31398573dde896926c022e90e93400fdf3e7e04aca931672a",
+  "qlean_version": "0.2.0+v0.1.0.ppu2.1.0",
+  "schema_version": 1,
+  "tensors": {
+    "dense.bf16.bf16_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "583034363eb51dc43bd7bffa303eb9dc21a988efa415170bb2f93ed280d43cc9",
+      "shape": [
+        3,
+        7
+      ]
+    },
+    "dense.bf16.bf16_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "f6f91f5de965bc8a5d4cbd06a5c1004f8c75be967ccc4a186b54837217e25bcd",
+      "shape": [
+        3,
+        1
+      ]
+    },
+    "dense.fp8.fp8_to_bf16.weight": {
+      "dtype": "torch.bfloat16",
+      "sha256": "59bafedc358599b675dda81b6efd526dbf5a12b4a41ffa4e6ee2e53b89ad577a",
+      "shape": [
+        129,
+        129
+      ]
+    },
+    "dense.fp8.fp8_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "d454ebea798135407b54bf77e40766199c5ce36012cf7f989ad51acd4cfe1e09",
+      "shape": [
+        129,
+        129
+      ]
+    },
+    "dense.fp8.fp8_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "a23c1a4ab778fade18ed276674f350999638b7d78b5855b64800832e63f9a9b8",
+      "shape": [
+        129,
+        1
+      ]
+    },
+    "moe.expert0.down.bf16.bf16_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "38c6b33aedac536deeac74428420a611e6fbe7007f422e66b401cd265673676c",
+      "shape": [
+        129,
+        65
+      ]
+    },
+    "moe.expert0.down.bf16.bf16_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "eb59451438083f45a4bb6672de507f5ffce2ff58a988a35ca4bc112efc8be092",
+      "shape": [
+        129,
+        1
+      ]
+    },
+    "moe.expert0.down.fp8.fp8_to_bf16.weight": {
+      "dtype": "torch.bfloat16",
+      "sha256": "91102b3f2fd5298dff3d47f8e7403f2c791a31a9517cf9bb168079d584c1aae5",
+      "shape": [
+        129,
+        65
+      ]
+    },
+    "moe.expert0.down.fp8.fp8_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "38c6b33aedac536deeac74428420a611e6fbe7007f422e66b401cd265673676c",
+      "shape": [
+        129,
+        65
+      ]
+    },
+    "moe.expert0.down.fp8.fp8_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "f4e8d673f568aed14844b6f54157bb82331f6a6ea478ff7fb082e7074b47a7e2",
+      "shape": [
+        129,
+        1
+      ]
+    },
+    "moe.expert0.gate.bf16.bf16_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "85871583e8e9f7da61811228980b85a7c85bd07b8aaa6144d6e80f51c55f589e",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert0.gate.bf16.bf16_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "e842e89515f0c915723aed8f3315ef2154b7e82f38050f671f52bf538554352f",
+      "shape": [
+        65,
+        1
+      ]
+    },
+    "moe.expert0.gate.fp8.fp8_to_bf16.weight": {
+      "dtype": "torch.bfloat16",
+      "sha256": "40d3a6020ed185da979baa7b38a49cfe235da155cbda717bf9cded9a167fa707",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert0.gate.fp8.fp8_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "4b985dca2edcb46e45c3030fb723937a5d26f746b25b65970822b38fee0a40b5",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert0.gate.fp8.fp8_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "8bcde34d5e05aaf8955874e75eacb30b832294f9501e8d1f26a0c78ec7ca3001",
+      "shape": [
+        65,
+        1
+      ]
+    },
+    "moe.expert0.up.bf16.bf16_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "85871583e8e9f7da61811228980b85a7c85bd07b8aaa6144d6e80f51c55f589e",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert0.up.bf16.bf16_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "e842e89515f0c915723aed8f3315ef2154b7e82f38050f671f52bf538554352f",
+      "shape": [
+        65,
+        1
+      ]
+    },
+    "moe.expert0.up.fp8.fp8_to_bf16.weight": {
+      "dtype": "torch.bfloat16",
+      "sha256": "2e220cf49a256e4d85c246c1940f2d81b2d8960fac250df4a386a473067428d0",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert0.up.fp8.fp8_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "4b985dca2edcb46e45c3030fb723937a5d26f746b25b65970822b38fee0a40b5",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert0.up.fp8.fp8_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "b79a6085087664dc67023a914cec950c94e005275693f8279aea82314e5c0263",
+      "shape": [
+        65,
+        1
+      ]
+    },
+    "moe.expert1.down.bf16.bf16_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "2f2cc39a22e04a202399dc69783ad8fba89d562049e97025855fc43ce602a9f6",
+      "shape": [
+        129,
+        65
+      ]
+    },
+    "moe.expert1.down.bf16.bf16_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "eb59451438083f45a4bb6672de507f5ffce2ff58a988a35ca4bc112efc8be092",
+      "shape": [
+        129,
+        1
+      ]
+    },
+    "moe.expert1.down.fp8.fp8_to_bf16.weight": {
+      "dtype": "torch.bfloat16",
+      "sha256": "109846d97af1273e3d0fe197ebc9b687a2305bcba14d0bd0465dd95a585a4c80",
+      "shape": [
+        129,
+        65
+      ]
+    },
+    "moe.expert1.down.fp8.fp8_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "2f2cc39a22e04a202399dc69783ad8fba89d562049e97025855fc43ce602a9f6",
+      "shape": [
+        129,
+        65
+      ]
+    },
+    "moe.expert1.down.fp8.fp8_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "f4e8d673f568aed14844b6f54157bb82331f6a6ea478ff7fb082e7074b47a7e2",
+      "shape": [
+        129,
+        1
+      ]
+    },
+    "moe.expert1.gate.bf16.bf16_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "5791043c3a6f2e4d23a400966f6df5f4e4044edded7df7d2d8110da9be5de989",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert1.gate.bf16.bf16_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "e842e89515f0c915723aed8f3315ef2154b7e82f38050f671f52bf538554352f",
+      "shape": [
+        65,
+        1
+      ]
+    },
+    "moe.expert1.gate.fp8.fp8_to_bf16.weight": {
+      "dtype": "torch.bfloat16",
+      "sha256": "348f5ac7368738cbd5bc642d17a6e7a544835eb33debe9d9263c8029768acfdb",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert1.gate.fp8.fp8_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "d29db376d14533b1e9cf2a1ed81262c95994ddbcf093fba80816ac2ecd1b1aa1",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert1.gate.fp8.fp8_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "a43b8aa58e7a90885b4e73f8dd2c2b97a99b64ebb2e7ee9659d1487d7cb2eedd",
+      "shape": [
+        65,
+        1
+      ]
+    },
+    "moe.expert1.up.bf16.bf16_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "5791043c3a6f2e4d23a400966f6df5f4e4044edded7df7d2d8110da9be5de989",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert1.up.bf16.bf16_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "e842e89515f0c915723aed8f3315ef2154b7e82f38050f671f52bf538554352f",
+      "shape": [
+        65,
+        1
+      ]
+    },
+    "moe.expert1.up.fp8.fp8_to_bf16.weight": {
+      "dtype": "torch.bfloat16",
+      "sha256": "f2a1575d55eba48067ffc5d851a70abab7cd27c4c63d74fbe5722d14e59c937b",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert1.up.fp8.fp8_to_int8.weight": {
+      "dtype": "torch.int8",
+      "sha256": "d29db376d14533b1e9cf2a1ed81262c95994ddbcf093fba80816ac2ecd1b1aa1",
+      "shape": [
+        65,
+        129
+      ]
+    },
+    "moe.expert1.up.fp8.fp8_to_int8.weight_scale": {
+      "dtype": "torch.float32",
+      "sha256": "5722cae8044025f87bc753fc6c81e7cd1e7de8ca65844d4301c650f80a348e8f",
+      "shape": [
+        65,
+        1
+      ]
+    }
+  },
+  "torch_version": "2.9.0"
+}

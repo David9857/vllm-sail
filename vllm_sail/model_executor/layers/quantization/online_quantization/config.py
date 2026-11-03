@@ -6,8 +6,6 @@ from typing import Any
 
 from vllm_sail import envs
 
-CONVERSION_METHODS = ("fp8-to-int8", "fp8-to-bf16")
-
 
 def validate_fp8_config(config: Mapping[str, Any]) -> None:
     if not isinstance(config, Mapping):
@@ -43,13 +41,8 @@ def select_conversion(
 ) -> str | None:
     if not is_ppu or checkpoint_method != "fp8":
         return None
-    if user_quant in CONVERSION_METHODS:
-        return user_quant
+    if user_quant == "int8":
+        return "fp8-to-int8"
     if user_quant is not None:
         return None
-    policy = envs.VLLM_SAIL_FP8_LOAD_POLICY
-    if not envs.is_set("VLLM_SAIL_FP8_LOAD_POLICY") and envs.is_set(
-        "VLLM_SAIL_ENABLE_FP8_TO_INT8"
-    ):
-        policy = "int8" if envs.VLLM_SAIL_ENABLE_FP8_TO_INT8 else "bf16"
-    return {"int8": "fp8-to-int8", "bf16": "fp8-to-bf16"}.get(policy)
+    return "fp8-to-bf16" if envs.VLLM_SAIL_FP8_TO_BF16 else None

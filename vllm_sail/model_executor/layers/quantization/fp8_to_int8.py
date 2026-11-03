@@ -9,15 +9,15 @@ from vllm.model_executor.layers.quantization.base_config import QuantizationConf
 from vllm.model_executor.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from vllm.platforms import current_platform
 
-from vllm_sail.model_executor.layers.quantization.online_conversion.config import (
+from vllm_sail.model_executor.layers.quantization.online_quantization.config import (
     select_conversion,
     validate_fp8_config,
 )
-from vllm_sail.model_executor.layers.quantization.online_conversion.loading import (
+from vllm_sail.model_executor.layers.quantization.online_quantization.loading import (
     CheckedUnquantizedLinearMethod,
     CheckedUnquantizedMoEMethod,
 )
-from vllm_sail.model_executor.layers.quantization.online_conversion.selection import (
+from vllm_sail.model_executor.layers.quantization.online_quantization.selection import (
     is_ignored,
     is_mixed_layer,
 )
@@ -45,7 +45,7 @@ class Fp8ToInt8Config(QuantizationConfig):
         self.recipe_id = "checkpoint"
 
     def maybe_update_config(self, model_name, hf_config=None, revision=None):
-        from vllm_sail.model_executor.layers.quantization.online_conversion.recipe import (
+        from vllm_sail.model_executor.layers.quantization.online_quantization.recipe import (
             select_recipe,
             target_exclusions,
         )
@@ -145,14 +145,14 @@ class Fp8ToInt8Config(QuantizationConfig):
         if isinstance(layer, LinearBase):
             if source_float and target_float:
                 return CheckedUnquantizedLinearMethod()
-            from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
+            from vllm_sail.model_executor.layers.quantization.online_quantization.linear import (
                 Fp8ConversionLinearMethod,
             )
 
             return Fp8ConversionLinearMethod(target, source_dtype=source)
         if source_float and target_float:
             return CheckedUnquantizedMoEMethod(layer.moe_config)
-        from vllm_sail.model_executor.layers.quantization.online_conversion.moe import (
+        from vllm_sail.model_executor.layers.quantization.online_quantization.moe import (
             Fp8ToBf16MoEMethod,
             Fp8ToInt8MoEMethod,
         )

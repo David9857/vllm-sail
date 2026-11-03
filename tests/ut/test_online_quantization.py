@@ -10,7 +10,7 @@ import pytest
 
 from tests.support.source import definition, function
 from vllm_sail import envs
-from vllm_sail.model_executor.layers.quantization.online_conversion.config import (
+from vllm_sail.model_executor.layers.quantization.online_quantization.config import (
     select_conversion,
     validate_fp8_config,
 )
@@ -25,32 +25,28 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-@pytest.mark.parametrize("policy", [None, "native", "bf16", "int8"])
-@pytest.mark.parametrize("user", [None, "fp8", "fp8-to-int8", "fp8-to-bf16", "other"])
-def test_explicit_selection_wins(monkeypatch, policy, user):
-    if policy is not None:
-        monkeypatch.setenv("VLLM_SAIL_FP8_LOAD_POLICY", policy)
-    expected = user if user in ("fp8-to-int8", "fp8-to-bf16") else None
+@pytest.mark.parametrize("decode_fp8", [None, "0", "1"])
+@pytest.mark.parametrize(
+    "user", [None, "fp8", "int8", "bf16", "fp8-to-int8", "fp8-to-bf16", "other"]
+)
+def test_explicit_selection_wins(monkeypatch, decode_fp8, user):
+    if decode_fp8 is not None:
+        monkeypatch.setenv("VLLM_SAIL_FP8_TO_BF16", decode_fp8)
+    expected = "fp8-to-int8" if user == "int8" else None
     if user is None:
-        expected = {"int8": "fp8-to-int8", "bf16": "fp8-to-bf16"}.get(policy)
+        expected = "fp8-to-bf16" if decode_fp8 == "1" else None
     assert select_conversion("fp8", user, is_ppu=True) == expected
     assert select_conversion("fp8", user, is_ppu=False) is None
     assert select_conversion("compressed-tensors", user, is_ppu=True) is None
 
 
-def test_legacy_alias_and_policy_precedence(monkeypatch):
+def test_fp8_to_bf16_flag(monkeypatch):
     assert select_conversion("fp8", None, is_ppu=True) is None
-    monkeypatch.setenv("VLLM_PPU_ENABLE_FP8_TO_INT8", "0")
+    monkeypatch.setenv("VLLM_SAIL_FP8_TO_BF16", "1")
     assert select_conversion("fp8", None, is_ppu=True) == "fp8-to-bf16"
-    monkeypatch.setenv("VLLM_SAIL_ENABLE_FP8_TO_INT8", "1")
-    assert select_conversion("fp8", None, is_ppu=True) == "fp8-to-int8"
-    monkeypatch.setenv("VLLM_SAIL_FP8_LOAD_POLICY", "native")
-    assert select_conversion("fp8", None, is_ppu=True) is None
-    monkeypatch.setenv("VLLM_SAIL_FP8_LOAD_POLICY", "")
-    assert select_conversion("fp8", None, is_ppu=True) is None
-    monkeypatch.setenv("VLLM_SAIL_FP8_LOAD_POLICY", "invalid")
-    with pytest.raises(ValueError, match="Expected one of"):
-        select_conversion("fp8", None, is_ppu=True)
+    for disabled in ("0", "false", ""):
+        monkeypatch.setenv("VLLM_SAIL_FP8_TO_BF16", disabled)
+        assert select_conversion("fp8", None, is_ppu=True) is None
 
 
 @pytest.mark.parametrize("is_ppu", [True, False])
@@ -108,7 +104,14 @@ def test_public_registry_registers_once_only_on_ppu(monkeypatch, is_ppu):
     module.register()
     expected = ["mixed_precision_w4"]
     if is_ppu:
-        expected += ["fp8-to-int8", "fp8-to-bf16", "bf16-to-int8", "deepseek_v4_fp8"]
+        expected += [
+            "fp8-to-int8",
+            "fp8-to-bf16",
+            "bf16-to-int8",
+            "int8",
+            "deepseek_v4_fp8",
+        ]
+        assert registered["int8"] is registered["bf16-to-int8"]
     assert names == expected
 
 
@@ -176,7 +179,7 @@ def test_checkpoint_fused_selection(upstream_source_root, monkeypatch):
     )
     module.is_layer_skipped = matcher
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    from vllm_sail.model_executor.layers.quantization.online_conversion.selection import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.selection import (
         is_ignored,
     )
 
@@ -194,7 +197,7 @@ def test_checkpoint_fused_selection(upstream_source_root, monkeypatch):
 @pytest.mark.upstream_source
 def test_moe_apply_matches_pinned_interface(upstream_source_root):
     local = definition(
-        ROOT / (QUANT + "online_conversion/moe.py"), "Fp8ToInt8MoEMethod.apply"
+        ROOT / (QUANT + "online_quantization/moe.py"), "Fp8ToInt8MoEMethod.apply"
     )
     upstream = definition(
         upstream_source_root / "vllm/model_executor/layers/quantization/fp8.py",
@@ -204,7 +207,7 @@ def test_moe_apply_matches_pinned_interface(upstream_source_root):
 
 
 def test_no_early_bound_oracle_or_fork_imports():
-    for path in (ROOT / QUANT / "online_conversion").glob("*.py"):
+    for path in (ROOT / QUANT / "online_quantization").glob("*.py"):
         tree = ast.parse(path.read_text())
         for node in tree.body:
             if isinstance(node, ast.ImportFrom) and node.module:
@@ -212,24 +215,50 @@ def test_no_early_bound_oracle_or_fork_imports():
         assert "vllm.utils.ppu_deep_gemm" not in path.read_text()
 
 
+@pytest.mark.parametrize(
+    "module,method",
+    [
+        ("linear.py", "Fp8ConversionLinearMethod.process_weights_after_loading"),
+        ("moe.py", "Fp8SourceMoE._convert"),
+    ],
+)
+def test_layer_adapters_use_golden_tested_conversion_functions(module, method):
+    """Prevent a loader change from bypassing the functions used by the golden."""
+    path = ROOT / QUANT / "online_quantization" / module
+    tree = ast.parse(path.read_text())
+    assert any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "quant_utils"
+        and {alias.name for alias in node.names} >= {"dequantize_fp8", "quantize_int8"}
+        for node in tree.body
+    )
+    body = definition(path, method)
+    called = {
+        node.func.id
+        for node in ast.walk(body)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {"dequantize_fp8", "quantize_int8"} <= called
+
+
 @pytest.mark.upstream_source
 @pytest.mark.parametrize(
-    "user,policy,expected",
+    "user,decode_fp8,expected",
     [
-        (None, "int8", "fp8-to-int8"),
-        (None, "bf16", "fp8-to-bf16"),
-        (None, "native", "fp8"),
-        ("fp8", "int8", "fp8"),
-        ("fp8-to-int8", "bf16", "fp8-to-int8"),
-        ("fp8-to-bf16", "int8", "fp8-to-bf16"),
+        (None, "1", "fp8-to-bf16"),
+        (None, None, "fp8"),
+        ("fp8", "1", "fp8"),
+        ("int8", None, "fp8-to-int8"),
+        ("int8", "1", "fp8-to-int8"),
     ],
 )
 def test_upstream_model_config_resolution(
-    upstream_source_root, monkeypatch, user, policy, expected
+    upstream_source_root, monkeypatch, user, decode_fp8, expected
 ):
     from typing import Literal, cast, get_args
 
-    monkeypatch.setenv("VLLM_SAIL_FP8_LOAD_POLICY", policy)
+    if decode_fp8 is not None:
+        monkeypatch.setenv("VLLM_SAIL_FP8_TO_BF16", decode_fp8)
 
     def get_config(name):
         if name in ("fp8-to-int8", "fp8-to-bf16"):
@@ -241,7 +270,7 @@ def test_upstream_model_config_resolution(
         return SimpleNamespace(override_quantization_method=lambda *a, **kw: None)
 
     registry = SimpleNamespace(
-        QUANTIZATION_METHODS=["fp8", "fp8-to-int8", "fp8-to-bf16"],
+        QUANTIZATION_METHODS=["fp8", "fp8-to-int8", "fp8-to-bf16", "int8"],
         QuantizationMethods=Literal["fp8"],
         DEPRECATED_QUANTIZATION_METHODS=[],
         get_quantization_config=get_config,
@@ -267,8 +296,37 @@ def test_upstream_model_config_resolution(
     assert verified == [expected]
 
 
+@pytest.mark.upstream_source
+def test_unquantized_bf16_keeps_int8_target(upstream_source_root):
+    from typing import Literal, cast, get_args
+
+    registry = SimpleNamespace(
+        QUANTIZATION_METHODS=["int8"],
+        QuantizationMethods=Literal["fp8"],
+        DEPRECATED_QUANTIZATION_METHODS=[],
+    )
+    verified = []
+    verify = function(
+        upstream_source_root / "vllm/config/model.py",
+        "ModelConfig._verify_quantization",
+        {
+            "me_quant": registry,
+            "cast": cast,
+            "get_args": get_args,
+            "current_platform": SimpleNamespace(verify_quantization=verified.append),
+        },
+    )
+    model = SimpleNamespace(
+        quantization="int8",
+        model_arch_config=SimpleNamespace(quantization_config=None),
+    )
+    verify(model)
+    assert model.quantization == "int8"
+    assert verified == ["int8"]
+
+
 def test_floating_safety_patterns_do_not_match_fused_gate_up():
-    from vllm_sail.model_executor.layers.quantization.online_conversion.recipe import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.recipe import (
         select_recipe,
     )
 
@@ -290,7 +348,7 @@ def test_source_mixed_metadata_is_valid(key):
         "fmt": None,
     }
     validate_fp8_config(config)
-    from vllm_sail.model_executor.layers.quantization.online_conversion.selection import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.selection import (
         is_mixed_layer,
     )
 
@@ -300,7 +358,7 @@ def test_source_mixed_metadata_is_valid(key):
 
 
 def test_legacy_recipe_selector_and_new_precedence():
-    from vllm_sail.model_executor.layers.quantization.online_conversion.recipe import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.recipe import (
         select_recipe,
     )
 

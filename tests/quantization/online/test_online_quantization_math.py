@@ -5,7 +5,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (  # noqa: E402
+from vllm_sail.model_executor.layers.quantization.online_quantization.quant_utils import (  # noqa: E402
     dequantize_fp8,
     quantize_int8,
 )
@@ -95,7 +95,7 @@ def test_moe_conversion_keeps_expert_and_gate_scale_grids(to_int8, gated):
     # Execute the production conversion body with real tensors; backend setup
     # is covered separately on PPU, not replaced by a numerical kernel mock.
     convert = function(
-        "vllm_sail/model_executor/layers/quantization/online_conversion/moe.py",
+        "vllm_sail/model_executor/layers/quantization/online_quantization/moe.py",
         "Fp8SourceMoE._convert",
         {
             "torch": torch,
@@ -165,7 +165,7 @@ def test_loader_checks_before_cast_and_forwards_moe_arguments():
     from tests.support.source import function
 
     make_loader = function(
-        "vllm_sail/model_executor/layers/quantization/online_conversion/loading.py",
+        "vllm_sail/model_executor/layers/quantization/online_quantization/loading.py",
         "checked_loader",
         {"wraps": wraps},
     )
@@ -195,7 +195,7 @@ def test_moe_padding_does_not_enter_decode_or_quantization(to_int8, source_dtype
     from tests.support.source import function
 
     convert = function(
-        "vllm_sail/model_executor/layers/quantization/online_conversion/moe.py",
+        "vllm_sail/model_executor/layers/quantization/online_quantization/moe.py",
         "Fp8SourceMoE._convert",
         {
             "torch": torch,

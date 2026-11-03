@@ -1,12 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """Real vLLM 0.31 loading interfaces, CPU tensors; no native PPU execution."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
+
+from tests.quantization.online.online_quantization_golden_inputs import (  # noqa: E402
+    cases,
+    tensor_digest,
+)
+
+
+def _qlean_golden_tensors():
+    return json.loads(
+        Path(__file__).with_name("online_quantization_qlean_golden.json").read_text()
+    )["tensors"]
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +70,7 @@ def test_actual_fused_loaders_keep_scale_grid_offsets(kind):
 def test_bf16_linear_uses_actual_vllm_parameters_and_loader():
     from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
-    from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.linear import (
         Fp8ConversionLinearMethod,
     )
 
@@ -90,6 +103,51 @@ def test_bf16_linear_uses_actual_vllm_parameters_and_loader():
     torch.testing.assert_close(method.apply(layer, x), x @ expected.t(), rtol=0, atol=0)
 
 
+def test_dense_fp8_to_int8_loaded_weights_match_qlean_golden(monkeypatch):
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+
+    from vllm_sail.model_executor.kernels.linear.scaled_mm import ppu
+    from vllm_sail.model_executor.layers.quantization.online_quantization.linear import (
+        Fp8ConversionLinearMethod,
+    )
+
+    # The backend only consumes converted weights; its device setup is unrelated
+    # to the loading-time tensor comparison.
+    class Kernel:
+        def __init__(self, *args):
+            pass
+
+        def process_weights_after_loading(self, layer):
+            pass
+
+    monkeypatch.setattr(ppu, "PPUInt8ScaledMMLinearKernel", Kernel)
+    source, scales = next(
+        (weight, scale)
+        for name, dtype, weight, scale in cases()
+        if name == "dense.fp8" and dtype == "fp8"
+    )
+    layer = torch.nn.Module()
+    method = Fp8ConversionLinearMethod("int8")
+    method.create_weights(
+        layer,
+        source.shape[1],
+        [source.shape[0]],
+        source.shape[1],
+        source.shape[0],
+        torch.bfloat16,
+        weight_loader=default_weight_loader,
+    )
+    layer.weight.weight_loader(layer.weight, source)
+    layer.weight_scale_inv.weight_loader(layer.weight_scale_inv, scales)
+    method.process_weights_after_loading(layer)
+    expected = _qlean_golden_tensors()
+    assert tensor_digest(layer.weight) == expected["dense.fp8.fp8_to_int8.weight"]
+    assert (
+        tensor_digest(layer.weight_scale)
+        == expected["dense.fp8.fp8_to_int8.weight_scale"]
+    )
+
+
 @pytest.mark.parametrize(
     "sizes,input_part,total_input,total_output",
     [
@@ -101,7 +159,7 @@ def test_bf16_linear_uses_actual_vllm_parameters_and_loader():
 def test_misaligned_shards_fail_before_allocating(
     sizes, input_part, total_input, total_output
 ):
-    from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.linear import (
         Fp8ConversionLinearMethod,
     )
 
@@ -119,7 +177,7 @@ def test_real_linear_dtype_guard_and_config_mapping():
     from vllm.model_executor.models.utils import WeightsMapper
 
     from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
-    from vllm_sail.model_executor.layers.quantization.online_conversion.loading import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.loading import (
         CheckedUnquantizedLinearMethod,
     )
 
@@ -157,7 +215,7 @@ def test_real_linear_dtype_guard_and_config_mapping():
 def test_moe_source_allocation_and_int8_conversion():
     from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
-    from vllm_sail.model_executor.layers.quantization.online_conversion.moe import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.moe import (
         Fp8SourceMoE,
     )
 
@@ -186,13 +244,83 @@ def test_moe_source_allocation_and_int8_conversion():
     assert torch.allclose(layer.w13_weight_scale, torch.full((2, 130, 1), 2 / 127))
 
 
+def test_moe_fp8_to_bf16_loaded_weights_match_qlean_golden(monkeypatch):
+    from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
+        UnquantizedFusedMoEMethod,
+    )
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+
+    from vllm_sail.model_executor.layers.quantization.online_quantization.moe import (
+        Fp8ToBf16MoEMethod,
+    )
+
+    # Keep the production loading/conversion path; skip unrelated backend
+    # selection and post-processing, which require a device configuration.
+    def initialize_cpu_backend(method, moe):
+        method.moe = moe
+
+    monkeypatch.setattr(UnquantizedFusedMoEMethod, "__init__", initialize_cpu_backend)
+    monkeypatch.setattr(
+        UnquantizedFusedMoEMethod,
+        "process_weights_after_loading",
+        lambda self, layer: None,
+    )
+    layer = torch.nn.Module()
+    layer.moe_config = SimpleNamespace(
+        tp_size=1,
+        is_act_and_mul=True,
+        hidden_dim_unpadded=129,
+        intermediate_size_per_partition_unpadded=65,
+        has_bias=False,
+    )
+    method = Fp8ToBf16MoEMethod(layer)
+    method.create_weights(
+        layer, 2, 129, 65, torch.bfloat16, weight_loader=default_weight_loader
+    )
+    inputs = {
+        name: (weight, scale)
+        for name, dtype, weight, scale in cases()
+        if name.startswith("moe.") and dtype == "fp8"
+    }
+    w13_weights, w13_scales, w2_weights, w2_scales = [], [], [], []
+    for expert in range(2):
+        prefix = f"moe.expert{expert}."
+        gate, gate_scale = inputs[prefix + "gate.fp8"]
+        up, up_scale = inputs[prefix + "up.fp8"]
+        down, down_scale = inputs[prefix + "down.fp8"]
+        w13_weights.append(torch.cat((gate, up)))
+        w13_scales.append(torch.cat((gate_scale, up_scale)))
+        w2_weights.append(down)
+        w2_scales.append(down_scale)
+    for name, value in (
+        ("w13_weight", torch.stack(w13_weights)),
+        ("w13_weight_scale_inv", torch.stack(w13_scales)),
+        ("w2_weight", torch.stack(w2_weights)),
+        ("w2_weight_scale_inv", torch.stack(w2_scales)),
+    ):
+        param = getattr(layer, name)
+        param.weight_loader(param, value)
+    method.process_weights_after_loading(layer)
+    expected = _qlean_golden_tensors()
+    for expert in range(2):
+        for name, weight in (
+            ("gate", layer.w13_weight[expert, :65]),
+            ("up", layer.w13_weight[expert, 65:]),
+            ("down", layer.w2_weight[expert]),
+        ):
+            key = f"moe.expert{expert}.{name}.fp8.fp8_to_bf16.weight"
+            assert tensor_digest(weight) == expected[key]
+    assert layer.w13_weight_scale_inv is None
+    assert layer.w2_weight_scale_inv is None
+
+
 def test_int8_moe_uses_late_oracle_and_upstream_kernel_signature(monkeypatch):
     import inspect
 
     from vllm.model_executor.layers.fused_moe.modular_kernel import FusedMoEKernel
     from vllm.model_executor.layers.fused_moe.oracle import int8 as oracle
 
-    from vllm_sail.model_executor.layers.quantization.online_conversion.moe import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.moe import (
         Fp8ToInt8MoEMethod,
     )
 
@@ -270,7 +398,7 @@ def test_source_and_target_selection_are_independent(source_float, target_float)
     from vllm.model_executor.layers.linear import LinearBase
 
     from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
-    from vllm_sail.model_executor.layers.quantization.online_conversion.loading import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.loading import (
         CheckedUnquantizedLinearMethod,
     )
 
@@ -331,7 +459,7 @@ def test_bf16_real_fused_loaders_and_conversion(monkeypatch, kind):
     from vllm_sail.model_executor.layers.quantization.bf16_to_int8 import (
         Bf16ToInt8Config,
     )
-    from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.quant_utils import (
         quantize_int8,
     )
 
@@ -379,9 +507,9 @@ def test_bf16_config_uses_real_upstream_factory(tmp_path):
         Bf16ToInt8Config,
     )
 
-    register_quantization_config("bf16-to-int8")(Bf16ToInt8Config)
+    register_quantization_config("int8")(Bf16ToInt8Config)
     model = SimpleNamespace(
-        quantization="bf16-to-int8",
+        quantization="int8",
         quantization_config=None,
         hf_config=SimpleNamespace(),
         hf_overrides={},
@@ -399,10 +527,10 @@ def test_bf16_config_uses_real_upstream_factory(tmp_path):
 def test_bf16_moe_conversion_with_real_loader_metadata():
     from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
-    from vllm_sail.model_executor.layers.quantization.online_conversion.moe import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.moe import (
         Fp8SourceMoE,
     )
-    from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.quant_utils import (
         quantize_int8,
     )
 
@@ -570,7 +698,7 @@ def test_source_mixed_linear_can_be_requantized(key, recipe):
     from vllm.model_executor.layers.linear import LinearBase
 
     from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
-    from vllm_sail.model_executor.layers.quantization.online_conversion.loading import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.loading import (
         CheckedUnquantizedLinearMethod,
     )
 
@@ -593,20 +721,19 @@ def test_source_mixed_linear_can_be_requantized(key, recipe):
     )
 
 
-@pytest.mark.parametrize("activation_dtype", [torch.bfloat16, torch.float16])
-def test_fp8_decode_retained_layer_uses_activation_dtype(activation_dtype):
-    from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
+def test_fp8_decode_retained_layer_uses_bf16_activation_dtype():
+    from vllm_sail.model_executor.layers.quantization.online_quantization.linear import (
         Fp8ConversionLinearMethod,
     )
 
     layer = torch.nn.Module()
     layer._cpu_skip_gemm_dispatch = True
     method = Fp8ConversionLinearMethod("bf16")
-    method.create_weights(layer, 128, [128], 128, 128, activation_dtype)
+    method.create_weights(layer, 128, [128], 128, 128, torch.bfloat16)
     layer.weight.data.fill_(1)
     layer.weight_scale_inv.data.fill_(2)
     method.process_weights_after_loading(layer)
-    assert layer.weight.dtype == activation_dtype
+    assert layer.weight.dtype == torch.bfloat16
     assert torch.equal(layer.weight, torch.full_like(layer.weight, 2))
 
 
@@ -648,7 +775,7 @@ def test_singular_and_plural_moe_source_semantics(key, expected, monkeypatch):
     from vllm.model_executor.layers.fused_moe import RoutedExperts
 
     from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
-    from vllm_sail.model_executor.layers.quantization.online_conversion import moe
+    from vllm_sail.model_executor.layers.quantization.online_quantization import moe
 
     monkeypatch.setattr(
         moe, "Fp8ToInt8MoEMethod", lambda layer, source_dtype: source_dtype
@@ -670,7 +797,7 @@ def test_bf16_moe_inherits_offline_eplb_capability():
         UnquantizedFusedMoEMethod,
     )
 
-    from vllm_sail.model_executor.layers.quantization.online_conversion.moe import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.moe import (
         Fp8ToBf16MoEMethod,
     )
 

@@ -61,6 +61,12 @@ def register() -> None:
                 raise RuntimeError(f"Quantization method {name!r} already has an owner")
             register_quantization_config(name)(config)
 
+        # The public INT8 target name resolves BF16 checkpoints directly;
+        # FP8 checkpoints are redirected by override_quantization_method.
+        if "int8" in QUANTIZATION_METHODS:
+            raise RuntimeError("Quantization method 'int8' already has an owner")
+        register_quantization_config("int8")(Bf16ToInt8Config)
+
         # The public registry explicitly supports overriding builtin configs.
         # Preserve its public name so checkpoint and MTP config resolution agree.
         register_quantization_config("deepseek_v4_fp8")(DeepseekV4FP8Config)

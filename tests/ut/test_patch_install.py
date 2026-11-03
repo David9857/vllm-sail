@@ -100,6 +100,40 @@ def test_install_is_idempotent(installed_patches) -> None:
     assert patch_pkg.installed()
 
 
+def test_online_quantization_dtype_patch_installs_once(installed_patches) -> None:
+    from vllm.config import model
+
+    from vllm_sail.patch.enhancement import online_quantization_dtype
+    from vllm_sail.patch.utils import original_of, patch
+
+    target = "vllm.config.model._get_and_verify_dtype"
+    replacement = online_quantization_dtype.get_and_verify_dtype
+    assert model._get_and_verify_dtype is replacement
+    assert (
+        original_of(replacement, target)
+        is online_quantization_dtype._upstream_get_dtype
+    )
+    records = [record for record in installed_patches if record.target == target]
+    assert len(records) == 1
+    assert records[0].reason and records[0].affected_versions
+    assert records[0].remove_when
+
+    count = len(installed_patches)
+    patch_pkg.install()
+    assert len(installed_patches) == count
+    with pytest.raises(RuntimeError, match="already patched"):
+
+        @patch(
+            "vllm.config.model",
+            "_get_and_verify_dtype",
+            reason="test duplicate installation",
+            affected_versions="test-only",
+            remove_when="test-only",
+        )
+        def duplicate(*args, **kwargs):
+            return None
+
+
 def test_performance_category_imports_with_vllm(installed_patches) -> None:
     """performance holds the Phase-4 FLA patches and needs vLLM to import.
 

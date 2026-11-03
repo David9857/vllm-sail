@@ -9,7 +9,7 @@ torch = pytest.importorskip("torch")
 
 
 def _rank(rank, rendezvous):
-    from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.quant_utils import (
         quantize_int8,
     )
 
@@ -42,7 +42,7 @@ def test_real_two_rank_full_row_scales(tmp_path):
 
 
 def _axes_rank(rank, rendezvous):
-    from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.quant_utils import (
         quantize_int8,
     )
 

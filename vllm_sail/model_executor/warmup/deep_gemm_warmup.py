@@ -184,7 +184,7 @@ def _extract_data_from_fused_moe_module(
         w13_s = None
         w2_s = None
     elif w13.dtype in [torch.int8, torch.uint8, torch.float8_e4m3fn, torch.int32]:
-        # Online conversion releases source FP8 scales but leaves their
+        # Online quantization releases source FP8 scales but leaves their
         # attributes present as None; use the converted INT8 scales then.
         w13_s = getattr(m, "w13_weight_scale_inv", None)
         if w13_s is None:

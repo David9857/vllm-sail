@@ -69,9 +69,9 @@ native build and device correctness verification before deployment.
 ## Compatibility controls
 
 For FP8/BF16 conversion and recipe selection, see [Online quantization](online_quantization.md).
-`VLLM_SAIL_FP8_LOAD_POLICY=native|bf16|int8` applies only when no explicit
-quantization argument was supplied. Leaving it unset preserves native behavior;
-the guide describes legacy opt-in variable precedence and source-format limits.
+`VLLM_SAIL_FP8_TO_BF16=1` decodes FP8 checkpoints to BF16 only when no
+explicit quantization argument was supplied. Leaving it unset preserves native
+FP8 behavior; use `--quantization int8` for online INT8 conversion.
 
 | Variable | Default | Behavior |
 | --- | --- | --- |

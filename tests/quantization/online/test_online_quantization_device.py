@@ -33,16 +33,13 @@ def runtime(monkeypatch):
     "source,target", [("fp8", "bf16"), ("fp8", "int8"), ("bf16", "int8")]
 )
 @pytest.mark.parametrize("bias", [False, True])
-@pytest.mark.parametrize("activation_dtype", ["bfloat16", "float16"])
-def test_dense_conversion_forward_and_idempotency(
-    runtime, source, target, bias, activation_dtype
-):
+def test_dense_conversion_forward_and_idempotency(runtime, source, target, bias):
     torch = runtime
-    dtype = getattr(torch, activation_dtype)
-    from vllm_sail.model_executor.layers.quantization.online_conversion.linear import (
+    dtype = torch.bfloat16
+    from vllm_sail.model_executor.layers.quantization.online_quantization.linear import (
         Fp8ConversionLinearMethod,
     )
-    from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.quant_utils import (
         dequantize_fp8,
         quantize_int8,
     )
@@ -107,7 +104,7 @@ def test_moe_conversion_forward(runtime, source, target):
     )
     from vllm_sail.model_executor.layers.quantization.fp8_to_bf16 import Fp8ToBf16Config
     from vllm_sail.model_executor.layers.quantization.fp8_to_int8 import Fp8ToInt8Config
-    from vllm_sail.model_executor.layers.quantization.online_conversion.quant_utils import (
+    from vllm_sail.model_executor.layers.quantization.online_quantization.quant_utils import (
         dequantize_fp8,
     )
 

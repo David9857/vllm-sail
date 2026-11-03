@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_sail.model_executor.layers.quantization.online_conversion.recipe import (
+from vllm_sail.model_executor.layers.quantization.online_quantization.recipe import (
     select_recipe,
     target_exclusions,
     validate_recipe,
